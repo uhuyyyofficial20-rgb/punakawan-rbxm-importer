@@ -1,562 +1,385 @@
---==================================================
+--========================================
 -- PUNAKAWAN IMPORTER
--- BLACK & PURPLE EDITION
--- GUI + FILE SCANNER + TOGGLE
---==================================================
-
-if not game:IsLoaded() then
-    game.Loaded:Wait()
-end
+-- GUI BASE
+--========================================
 
 local Players = game:GetService("Players")
-local UIS = game:GetService("UserInputService")
 local player = Players.LocalPlayer
+
+if not player then
+    warn("Punakawan Importer: LocalPlayer tidak tersedia.")
+    return
+end
+
 local playerGui = player:WaitForChild("PlayerGui")
 
---==================================================
--- CHECK EXISTING GUI
---==================================================
+-- Cegah GUI duplikat
+local oldGui = playerGui:FindFirstChild("PunakawanImporter")
 
-local existing = playerGui:FindFirstChild("PunakawanImporter")
+if oldGui then
+    oldGui.Enabled = true
 
-if existing then
-    local main = existing:FindFirstChild("Main")
-    local toggle = existing:FindFirstChild("ToggleButton")
-
-    if main then
-        main.Visible = true
-    end
-
-    if toggle then
-        toggle.Visible = false
+    local oldMain = oldGui:FindFirstChild("Main")
+    if oldMain then
+        oldMain.Visible = true
     end
 
     return
 end
 
---==================================================
--- CONFIG
---==================================================
+--========================================
+-- KONFIGURASI
+--========================================
 
-local CONFIG = {
-    Folder = "Delta/Workspace/",
-    Title = "PUNAKAWAN IMPORTER",
-}
+local PURPLE = Color3.fromRGB(145, 65, 255)
+local DARK = Color3.fromRGB(19, 16, 27)
+local PANEL = Color3.fromRGB(34, 28, 45)
+local WHITE = Color3.fromRGB(245, 240, 255)
+local GRAY = Color3.fromRGB(170, 160, 185)
 
---==================================================
--- COLORS
---==================================================
-
-local C = {
-    Background = Color3.fromRGB(18, 16, 25),
-    Panel = Color3.fromRGB(31, 27, 42),
-    Purple = Color3.fromRGB(145, 70, 255),
-    PurpleDark = Color3.fromRGB(83, 42, 135),
-    White = Color3.fromRGB(245, 242, 255),
-    Gray = Color3.fromRGB(175, 165, 190),
-    Green = Color3.fromRGB(100, 230, 155),
-    Red = Color3.fromRGB(255, 105, 120),
-}
-
---==================================================
--- GUI HELPERS
---==================================================
+--========================================
+-- PEMBUAT GUI
+--========================================
 
 local function create(className, properties, parent)
-    local object = Instance.new(className)
+    local obj = Instance.new(className)
 
     for property, value in pairs(properties) do
-        object[property] = value
+        obj[property] = value
     end
 
-    object.Parent = parent
-    return object
+    obj.Parent = parent
+    return obj
 end
 
-local function addCorner(object, radius)
+local function corner(obj, radius)
     create("UICorner", {
-        CornerRadius = UDim.new(0, radius or 8)
-    }, object)
+        CornerRadius = UDim.new(0, radius)
+    }, obj)
 end
 
-local function addStroke(object, color, thickness)
-    create("UIStroke", {
-        Color = color,
-        Thickness = thickness or 1,
-    }, object)
-end
-
---==================================================
--- ROOT GUI
---==================================================
+--========================================
+-- SCREEN GUI
+--========================================
 
 local gui = create("ScreenGui", {
     Name = "PunakawanImporter",
     ResetOnSpawn = false,
     DisplayOrder = 999,
-    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, playerGui)
 
---==================================================
--- MAIN WINDOW
---==================================================
+--========================================
+-- MAIN PANEL
+--========================================
 
 local main = create("Frame", {
     Name = "Main",
-    Size = UDim2.fromOffset(340, 440),
-    Position = UDim2.new(0.5, -170, 0.5, -220),
-    BackgroundColor3 = C.Background,
+    Size = UDim2.new(0, 340, 0, 390),
+    Position = UDim2.new(0.5, -170, 0.5, -195),
+    BackgroundColor3 = DARK,
     BorderSizePixel = 0,
 }, gui)
 
-addCorner(main, 15)
-addStroke(main, C.Purple, 1.5)
+corner(main, 16)
 
---==================================================
--- FLOATING TOGGLE
---==================================================
+create("UIStroke", {
+    Color = PURPLE,
+    Thickness = 2,
+}, main)
 
-local toggle = create("TextButton", {
-    Name = "ToggleButton",
-    Size = UDim2.fromOffset(54, 54),
-    Position = UDim2.new(0, 18, 0.5, -27),
-    BackgroundColor3 = C.Purple,
-    Text = "P",
-    TextColor3 = C.White,
-    TextSize = 24,
-    Font = Enum.Font.GothamBold,
-    Visible = false,
-}, gui)
-
-addCorner(toggle, 27)
-addStroke(toggle, C.White, 1)
-
---==================================================
+--========================================
 -- HEADER
---==================================================
+--========================================
 
 local header = create("Frame", {
     Name = "Header",
-    Size = UDim2.new(1, 0, 0, 66),
-    BackgroundColor3 = C.Panel,
+    Size = UDim2.new(1, 0, 0, 65),
+    BackgroundColor3 = PANEL,
     BorderSizePixel = 0,
 }, main)
 
-addCorner(header, 14)
-
-create("Frame", {
-    Size = UDim2.new(1, 0, 0, 14),
-    Position = UDim2.new(0, 0, 1, -14),
-    BackgroundColor3 = C.Panel,
-    BorderSizePixel = 0,
-}, header)
+corner(header, 15)
 
 create("TextLabel", {
-    Size = UDim2.new(1, -55, 0, 29),
-    Position = UDim2.fromOffset(14, 8),
+    Size = UDim2.new(1, -55, 0, 27),
+    Position = UDim2.new(0, 14, 0, 8),
     BackgroundTransparency = 1,
-    Text = CONFIG.Title,
-    TextColor3 = C.White,
-    TextSize = 16,
+    Text = "PUNAKAWAN IMPORTER",
+    TextColor3 = WHITE,
+    TextSize = 15,
     Font = Enum.Font.GothamBold,
     TextXAlignment = Enum.TextXAlignment.Left,
 }, header)
 
 create("TextLabel", {
     Size = UDim2.new(1, -55, 0, 18),
-    Position = UDim2.fromOffset(14, 37),
+    Position = UDim2.new(0, 14, 0, 36),
     BackgroundTransparency = 1,
-    Text = "RBXM / RBXL • MOBILE",
-    TextColor3 = C.Gray,
+    Text = "RBXM / RBXL • IMPORT TOOL",
+    TextColor3 = GRAY,
     TextSize = 10,
     Font = Enum.Font.Gotham,
     TextXAlignment = Enum.TextXAlignment.Left,
 }, header)
 
 local minimize = create("TextButton", {
-    Name = "MinimizeButton",
-    Size = UDim2.fromOffset(32, 32),
+    Name = "Minimize",
+    Size = UDim2.new(0, 32, 0, 32),
     Position = UDim2.new(1, -42, 0, 16),
-    BackgroundColor3 = Color3.fromRGB(100, 42, 65),
+    BackgroundColor3 = Color3.fromRGB(105, 40, 65),
     Text = "—",
-    TextColor3 = C.White,
-    TextSize = 20,
+    TextColor3 = WHITE,
+    TextSize = 18,
     Font = Enum.Font.GothamBold,
 }, header)
 
-addCorner(minimize)
+corner(minimize, 8)
 
---==================================================
--- FORMAT SELECTOR
---==================================================
+--========================================
+-- FORMAT BUTTONS
+--========================================
 
 create("TextLabel", {
-    Size = UDim2.new(1, -24, 0, 23),
-    Position = UDim2.fromOffset(12, 76),
+    Size = UDim2.new(1, -24, 0, 22),
+    Position = UDim2.new(0, 12, 0, 76),
     BackgroundTransparency = 1,
     Text = "PILIH FORMAT FILE",
-    TextColor3 = C.Gray,
+    TextColor3 = GRAY,
     TextSize = 11,
     Font = Enum.Font.GothamBold,
     TextXAlignment = Enum.TextXAlignment.Left,
 }, main)
 
-local selectedType = "RBXM"
-
-local function makeButton(name, text, position, size, color, parent)
+local function makeButton(name, text, position, size)
     local button = create("TextButton", {
         Name = name,
         Size = size,
         Position = position,
-        BackgroundColor3 = color,
+        BackgroundColor3 = PANEL,
         Text = text,
-        TextColor3 = C.White,
+        TextColor3 = WHITE,
         TextSize = 12,
         Font = Enum.Font.GothamBold,
-    }, parent or main)
+    }, main)
 
-    addCorner(button)
+    corner(button, 9)
     return button
 end
 
-local modelButton = makeButton(
+local rbxmButton = makeButton(
     "RBXMButton",
     "RBXM / RBXMX",
-    UDim2.fromOffset(12, 101),
-    UDim2.fromOffset(153, 36),
-    C.Purple
+    UDim2.new(0, 12, 0, 102),
+    UDim2.new(0, 153, 0, 38)
 )
 
-local placeButton = makeButton(
+local rbxlButton = makeButton(
     "RBXLButton",
     "RBXL / RBXLX",
-    UDim2.fromOffset(175, 101),
-    UDim2.fromOffset(153, 36),
-    C.Panel
+    UDim2.new(0, 175, 0, 102),
+    UDim2.new(0, 153, 0, 38)
 )
 
---==================================================
--- FILE LIST
---==================================================
+--========================================
+-- FILE LIST AREA
+--========================================
 
 create("TextLabel", {
-    Size = UDim2.new(1, -100, 0, 25),
-    Position = UDim2.fromOffset(12, 145),
+    Size = UDim2.new(1, -24, 0, 22),
+    Position = UDim2.new(0, 12, 0, 150),
     BackgroundTransparency = 1,
     Text = "DAFTAR FILE",
-    TextColor3 = C.White,
+    TextColor3 = WHITE,
     TextSize = 12,
     Font = Enum.Font.GothamBold,
     TextXAlignment = Enum.TextXAlignment.Left,
 }, main)
 
-local refreshButton = makeButton(
+local refresh = makeButton(
     "RefreshButton",
     "REFRESH",
-    UDim2.new(1, -94, 0, 144),
-    UDim2.fromOffset(82, 27),
-    C.PurpleDark
+    UDim2.new(1, -94, 0, 146),
+    UDim2.new(0, 82, 0, 28)
 )
 
-local fileList = create("ScrollingFrame", {
-    Name = "FileList",
-    Size = UDim2.new(1, -24, 0, 150),
-    Position = UDim2.fromOffset(12, 176),
-    BackgroundColor3 = C.Panel,
+local fileArea = create("Frame", {
+    Name = "FileArea",
+    Size = UDim2.new(1, -24, 0, 120),
+    Position = UDim2.new(0, 12, 0, 177),
+    BackgroundColor3 = PANEL,
     BorderSizePixel = 0,
-    ScrollBarThickness = 4,
-    ScrollBarImageColor3 = C.Purple,
-    CanvasSize = UDim2.new(0, 0, 0, 0),
 }, main)
 
-addCorner(fileList)
+corner(fileArea, 10)
 
-local layout = create("UIListLayout", {
-    Padding = UDim.new(0, 5),
-    SortOrder = Enum.SortOrder.LayoutOrder,
-}, fileList)
+local fileText = create("TextLabel", {
+    Name = "FileText",
+    Size = UDim2.new(1, -16, 1, -16),
+    Position = UDim2.new(0, 8, 0, 8),
+    BackgroundTransparency = 1,
+    Text = "Daftar file belum dimuat.",
+    TextColor3 = GRAY,
+    TextSize = 11,
+    Font = Enum.Font.Gotham,
+    TextWrapped = true,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextYAlignment = Enum.TextYAlignment.Top,
+}, fileArea)
 
-create("UIPadding", {
-    PaddingTop = UDim.new(0, 7),
-    PaddingBottom = UDim.new(0, 7),
-    PaddingLeft = UDim.new(0, 7),
-    PaddingRight = UDim.new(0, 7),
-}, fileList)
-
-local selectedFile
-local fileButtons = {}
-
---==================================================
+--========================================
 -- STATUS
---==================================================
+--========================================
 
 local status = create("TextLabel", {
     Name = "Status",
-    Size = UDim2.new(1, -24, 0, 34),
-    Position = UDim2.fromOffset(12, 333),
+    Size = UDim2.new(1, -24, 0, 30),
+    Position = UDim2.new(0, 12, 0, 305),
     BackgroundTransparency = 1,
-    Text = "Status: Siap memindai file.",
-    TextColor3 = C.Gray,
+    Text = "Status: GUI siap.",
+    TextColor3 = GRAY,
     TextSize = 11,
     Font = Enum.Font.Gotham,
     TextWrapped = true,
     TextXAlignment = Enum.TextXAlignment.Left,
 }, main)
 
-local function setStatus(message, color)
-    status.Text = "Status: " .. message
-    status.TextColor3 = color or C.Gray
-end
-
---==================================================
--- FILE SCANNER
---==================================================
-
-local function getExecutorFunction(name)
-    local fn
-
-    pcall(function()
-        fn = _G[name]
-    end)
-
-    if type(fn) == "function" then
-        return fn
-    end
-
-    if type(getfenv) == "function" then
-        pcall(function()
-            fn = getfenv(0)[name]
-        end)
-    end
-
-    if type(fn) == "function" then
-        return fn
-    end
-
-    return nil
-end
-
-local function clearFileList()
-    for _, button in ipairs(fileButtons) do
-        button:Destroy()
-    end
-
-    table.clear(fileButtons)
-    selectedFile = nil
-end
-
-local function matchesFormat(path)
-    local lower = path:lower()
-
-    if selectedType == "RBXM" then
-        return lower:match("%.rbxm$") ~= nil
-            or lower:match("%.rbxmx$") ~= nil
-    end
-
-    return lower:match("%.rbxl$") ~= nil
-        or lower:match("%.rbxlx$") ~= nil
-end
-
-local function refreshFiles()
-    clearFileList()
-
-    local listfilesFn = getExecutorFunction("listfiles")
-    local isfileFn = getExecutorFunction("isfile")
-
-    if not listfilesFn then
-        setStatus("Executor tidak menyediakan listfiles().", C.Red)
-        return
-    end
-
-    local ok, files = pcall(function()
-        return listfilesFn(CONFIG.Folder)
-    end)
-
-    if not ok then
-        setStatus("Gagal membaca folder Delta/Workspace/.", C.Red)
-        return
-    end
-
-    if type(files) ~= "table" then
-        setStatus("Hasil pemindaian tidak valid.", C.Red)
-        return
-    end
-
-    local count = 0
-
-    for _, path in ipairs(files) do
-        if type(path) == "string" and matchesFormat(path) then
-            local valid = true
-
-            if isfileFn then
-                local checkOK, result = pcall(isfileFn, path)
-                valid = checkOK and result == true
-            end
-
-            if valid then
-                count = count + 1
-
-                local name = path:match("([^/\\]+)$") or path
-
-                local button = makeButton(
-                    "File_" .. count,
-                    "  " .. name,
-                    UDim2.new(),
-                    UDim2.new(1, -4, 0, 34),
-                    C.Background,
-                    fileList
-                )
-
-                button.LayoutOrder = count
-                button.TextXAlignment = Enum.TextXAlignment.Left
-                button.Font = Enum.Font.Gotham
-                button.TextSize = 11
-
-                table.insert(fileButtons, button)
-
-                button.MouseButton1Click:Connect(function()
-                    selectedFile = path
-
-                    for _, item in ipairs(fileButtons) do
-                        item.BackgroundColor3 = C.Background
-                    end
-
-                    button.BackgroundColor3 = C.PurpleDark
-                    setStatus("Dipilih: " .. name, C.Green)
-                end)
-            end
-        end
-    end
-
-    fileList.CanvasSize = UDim2.new(
-        0, 0, 0, layout.AbsoluteContentSize.Y + 15
-    )
-
-    if count == 0 then
-        setStatus(
-            "File " .. selectedType .. " tidak ditemukan.",
-            C.Gray
-        )
-    else
-        setStatus(tostring(count) .. " file ditemukan.", C.Green)
-    end
-end
-
-modelButton.MouseButton1Click:Connect(function()
-    selectedType = "RBXM"
-    modelButton.BackgroundColor3 = C.Purple
-    placeButton.BackgroundColor3 = C.Panel
-    refreshFiles()
-end)
-
-placeButton.MouseButton1Click:Connect(function()
-    selectedType = "RBXL"
-    modelButton.BackgroundColor3 = C.Panel
-    placeButton.BackgroundColor3 = C.Purple
-    refreshFiles()
-end)
-
-refreshButton.MouseButton1Click:Connect(refreshFiles)
-
---==================================================
+--========================================
 -- IMPORT BUTTON
---==================================================
+--========================================
 
 local importButton = makeButton(
     "ImportButton",
     "IMPORT FILE TERPILIH",
-    UDim2.fromOffset(12, 373),
-    UDim2.new(1, -24, 0, 40),
-    C.Purple
+    UDim2.new(0, 12, 0, 345),
+    UDim2.new(1, -24, 0, 35)
 )
 
-importButton.MouseButton1Click:Connect(function()
-    if not selectedFile then
-        setStatus("Pilih file terlebih dahulu.", C.Red)
-        return
-    end
+--========================================
+-- FLOATING OPEN BUTTON
+--========================================
 
-    local readfileFn = getExecutorFunction("readfile")
+local openButton = create("TextButton", {
+    Name = "OpenButton",
+    Size = UDim2.new(0, 52, 0, 52),
+    Position = UDim2.new(0, 18, 0.5, -26),
+    BackgroundColor3 = PURPLE,
+    Text = "P",
+    TextColor3 = WHITE,
+    TextSize = 22,
+    Font = Enum.Font.GothamBold,
+    Visible = false,
+}, gui)
 
-    if not readfileFn then
-        setStatus("Executor tidak menyediakan readfile().", C.Red)
-        return
-    end
+corner(openButton, 26)
 
-    local ok, data = pcall(function()
-        return readfileFn(selectedFile)
-    end)
-
-    if not ok or type(data) ~= "string" then
-        setStatus("File tidak dapat dibaca.", C.Red)
-        return
-    end
-
-    setStatus(
-        "File terbaca: " .. #data ..
-        " byte. Parser impor belum tersedia.",
-        C.Gray
-    )
-end)
-
---==================================================
--- MINIMIZE AND RESTORE
---==================================================
+--========================================
+-- GUI CONTROLS
+--========================================
 
 minimize.MouseButton1Click:Connect(function()
     main.Visible = false
-    toggle.Visible = true
+    openButton.Visible = true
 end)
 
-toggle.MouseButton1Click:Connect(function()
+openButton.MouseButton1Click:Connect(function()
     main.Visible = true
-    toggle.Visible = false
+    openButton.Visible = false
 end)
 
---==================================================
--- DRAG WINDOW
---==================================================
+--========================================
+-- FILE SCANNER
+--========================================
 
-local dragging = false
-local dragStart
-local startPosition
+local selectedFormat = "RBXM"
+local selectedFile = nil
 
-header.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch
-        or input.UserInputType == Enum.UserInputType.MouseButton1 then
+local function scanFiles()
+    selectedFile = nil
 
-        dragging = true
-        dragStart = input.Position
-        startPosition = main.Position
+    local listFunction = listfiles
+
+    if type(listFunction) ~= "function" then
+        fileText.Text =
+            "Filesystem tidak tersedia di executor ini."
+        status.Text = "Status: listfiles tidak tersedia."
+        status.TextColor3 = Color3.fromRGB(255, 100, 120)
+        return
     end
-end)
 
-UIS.InputChanged:Connect(function(input)
-    if dragging and (
-        input.UserInputType == Enum.UserInputType.Touch
-        or input.UserInputType == Enum.UserInputType.MouseMovement
-    ) then
-        local delta = input.Position - dragStart
+    local ok, result = pcall(function()
+        return listFunction("Delta/Workspace/")
+    end)
 
-        main.Position = UDim2.new(
-            startPosition.X.Scale,
-            startPosition.X.Offset + delta.X,
-            startPosition.Y.Scale,
-            startPosition.Y.Offset + delta.Y
-        )
+    if not ok or type(result) ~= "table" then
+        fileText.Text =
+            "Folder gagal dibaca: Delta/Workspace/"
+        status.Text = "Status: gagal membaca folder."
+        status.TextColor3 = Color3.fromRGB(255, 100, 120)
+        return
     end
-end)
 
-UIS.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch
-        or input.UserInputType == Enum.UserInputType.MouseButton1 then
+    local lines = {}
 
-        dragging = false
+    for _, path in ipairs(result) do
+        if type(path) == "string" then
+            local lower = path:lower()
+
+            local matches
+
+            if selectedFormat == "RBXM" then
+                matches = lower:match("%.rbxm$")
+                    or lower:match("%.rbxmx$")
+            else
+                matches = lower:match("%.rbxl$")
+                    or lower:match("%.rbxlx$")
+            end
+
+            if matches then
+                table.insert(lines, path)
+            end
+        end
     end
+
+    if #lines == 0 then
+        fileText.Text =
+            "Tidak ada file " .. selectedFormat ..
+            " yang ditemukan di Delta/Workspace/."
+        status.Text = "Status: tidak ada file."
+        status.TextColor3 = GRAY
+        return
+    end
+
+    fileText.Text = table.concat(lines, "\n")
+    status.Text =
+        "Status: " .. #lines ..
+        " file ditemukan. Pemilihan file belum diaktifkan."
+    status.TextColor3 = Color3.fromRGB(100, 230, 155)
+end
+
+rbxmButton.MouseButton1Click:Connect(function()
+    selectedFormat = "RBXM"
+    rbxmButton.BackgroundColor3 = PURPLE
+    rbxlButton.BackgroundColor3 = PANEL
+    scanFiles()
 end)
 
---==================================================
+rbxlButton.MouseButton1Click:Connect(function()
+    selectedFormat = "RBXL"
+    rbxlButton.BackgroundColor3 = PURPLE
+    rbxmButton.BackgroundColor3 = PANEL
+    scanFiles()
+end)
+
+refresh.MouseButton1Click:Connect(scanFiles)
+
+importButton.MouseButton1Click:Connect(function()
+    status.Text =
+        "Status: parser RBXM/RBXL belum tersedia."
+    status.TextColor3 = Color3.fromRGB(255, 190, 90)
+end)
+
+--========================================
 -- START
---==================================================
+--========================================
 
-refreshFiles()
+scanFiles()
