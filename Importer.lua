@@ -1,263 +1,467 @@
--- Delta Executor Decal Installer Tool
-local Players = game:GetService("Players")
-local CoreGui = game:GetService("CoreGui")
-local UserInputService = game:GetService("UserInputService")
-local player = Players.LocalPlayer
-local mouse = player:GetMouse()
+--========================================================--
+--       PUNAKAWAN COMMUNITY IMPORTER
+--       Created for PUNAKAWAN COMMUNITY
+--       GUI File Browser for Delta
+--========================================================--
 
--- Hapus GUI lama jika sudah pernah dijalankan
-if CoreGui:FindFirstChild("DeltaDecalGui") then
-    CoreGui.DeltaDecalGui:Destroy()
+local CONFIG = {
+    TITLE = "PUNAKAWAN COMMUNITY",
+    SUBTITLE = "RBX FILE IMPORTER",
+    FOLDER = "Workspace",
+    ACCENT = Color3.fromRGB(145, 75, 255),
+    BACKGROUND = Color3.fromRGB(20, 20, 28),
+    PANEL = Color3.fromRGB(30, 30, 42),
+    TEXT = Color3.fromRGB(245, 245, 255),
+    MUTED = Color3.fromRGB(155, 155, 175)
+}
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+
+-- Remove previous GUI
+local OldGUI = PlayerGui:FindFirstChild("PunakawanImporter")
+if OldGUI then
+    OldGUI:Destroy()
 end
 
--- Variables State
-local selectedPart = nil
-local isMinimized = false
-local selectingMode = false
-local currentFaceIndex = 1
-local faces = {"Front", "Back", "Top", "Bottom", "Left", "Right"}
-local selectedFace = Enum.NormalId.Front
+--========================================================--
+-- GUI CREATION
+--========================================================--
 
---------------------------------------------------------------------------------
--- 1. UTILS (Fungsi Helper Draggable untuk Mobile & PC)
---------------------------------------------------------------------------------
-local function makeDraggable(topbar, frame)
-    local dragging, dragInput, dragStart, startPos
-    topbar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = frame.Position
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then
-                    dragging = false
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "PunakawanImporter"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.DisplayOrder = 999
+ScreenGui.Parent = PlayerGui
+
+local function Create(className, properties, parent)
+    local object = Instance.new(className)
+
+    for property, value in pairs(properties) do
+        object[property] = value
+    end
+
+    object.Parent = parent
+    return object
+end
+
+local function Corner(object, radius)
+    Create("UICorner", {
+        CornerRadius = UDim.new(0, radius)
+    }, object)
+end
+
+local function Stroke(object, color, thickness)
+    Create("UIStroke", {
+        Color = color,
+        Thickness = thickness,
+        Transparency = 0.15
+    }, object)
+end
+
+local Main = Create("Frame", {
+    Name = "Main",
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.new(0.5, 0, 0.5, 0),
+    Size = UDim2.new(0.88, 0, 0, 440),
+    BackgroundColor3 = CONFIG.BACKGROUND,
+    BorderSizePixel = 0,
+    ClipsDescendants = true
+}, ScreenGui)
+
+Create("UISizeConstraint", {
+    MinSize = Vector2.new(280, 350),
+    MaxSize = Vector2.new(500, 520)
+}, Main)
+
+Corner(Main, 14)
+Stroke(Main, CONFIG.ACCENT, 1.5)
+
+-- Header
+local Header = Create("Frame", {
+    Name = "Header",
+    Size = UDim2.new(1, 0, 0, 65),
+    BackgroundColor3 = CONFIG.PANEL,
+    BorderSizePixel = 0
+}, Main)
+
+local Title = Create("TextLabel", {
+    Position = UDim2.new(0, 15, 0, 9),
+    Size = UDim2.new(1, -115, 0, 23),
+    BackgroundTransparency = 1,
+    Text = CONFIG.TITLE,
+    TextColor3 = CONFIG.TEXT,
+    TextSize = 16,
+    Font = Enum.Font.GothamBold,
+    TextXAlignment = Enum.TextXAlignment.Left
+}, Header)
+
+local Subtitle = Create("TextLabel", {
+    Position = UDim2.new(0, 15, 0, 34),
+    Size = UDim2.new(1, -115, 0, 17),
+    BackgroundTransparency = 1,
+    Text = CONFIG.SUBTITLE,
+    TextColor3 = CONFIG.MUTED,
+    TextSize = 10,
+    Font = Enum.Font.Gotham,
+    TextXAlignment = Enum.TextXAlignment.Left
+}, Header)
+
+local MinimizeButton = Create("TextButton", {
+    Position = UDim2.new(1, -76, 0, 15),
+    Size = UDim2.new(0, 28, 0, 28),
+    BackgroundColor3 = CONFIG.BACKGROUND,
+    Text = "—",
+    TextColor3 = CONFIG.TEXT,
+    TextSize = 17,
+    Font = Enum.Font.GothamBold,
+    AutoButtonColor = true
+}, Header)
+Corner(MinimizeButton, 8)
+
+local CloseButton = Create("TextButton", {
+    Position = UDim2.new(1, -40, 0, 15),
+    Size = UDim2.new(0, 28, 0, 28),
+    BackgroundColor3 = Color3.fromRGB(180, 55, 70),
+    Text = "×",
+    TextColor3 = CONFIG.TEXT,
+    TextSize = 20,
+    Font = Enum.Font.GothamBold,
+    AutoButtonColor = true
+}, Header)
+Corner(CloseButton, 8)
+
+-- File format tabs
+local TabHolder = Create("Frame", {
+    Position = UDim2.new(0, 12, 0, 77),
+    Size = UDim2.new(1, -24, 0, 70),
+    BackgroundTransparency = 1
+}, Main)
+
+Create("UIGridLayout", {
+    CellSize = UDim2.new(0.5, -5, 0, 30),
+    CellPadding = UDim2.new(0, 8, 0, 7),
+    FillDirectionMaxCells = 2,
+    SortOrder = Enum.SortOrder.LayoutOrder
+}, TabHolder)
+
+local Formats = {
+    {Name = "RBXM", Extension = ".rbxm"},
+    {Name = "RBXMX", Extension = ".rbxmx"},
+    {Name = "RBXL", Extension = ".rbxl"},
+    {Name = "RBXLX", Extension = ".rbxlx"}
+}
+
+local CurrentFormat = "RBXM"
+local Tabs = {}
+
+-- Search
+local SearchBox = Create("TextBox", {
+    Position = UDim2.new(0, 12, 0, 154),
+    Size = UDim2.new(1, -24, 0, 36),
+    BackgroundColor3 = CONFIG.PANEL,
+    PlaceholderText = "Search files...",
+    PlaceholderColor3 = CONFIG.MUTED,
+    Text = "",
+    TextColor3 = CONFIG.TEXT,
+    TextSize = 13,
+    Font = Enum.Font.Gotham,
+    ClearTextOnFocus = false
+}, Main)
+Corner(SearchBox, 8)
+
+-- File list
+local FileList = Create("ScrollingFrame", {
+    Position = UDim2.new(0, 12, 0, 200),
+    Size = UDim2.new(1, -24, 0, 145),
+    BackgroundColor3 = CONFIG.PANEL,
+    BorderSizePixel = 0,
+    ScrollBarThickness = 4,
+    ScrollBarImageColor3 = CONFIG.ACCENT,
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y
+}, Main)
+Corner(FileList, 8)
+
+Create("UIListLayout", {
+    Padding = UDim.new(0, 5),
+    SortOrder = Enum.SortOrder.LayoutOrder
+}, FileList)
+
+Create("UIPadding", {
+    PaddingTop = UDim.new(0, 7),
+    PaddingBottom = UDim.new(0, 7),
+    PaddingLeft = UDim.new(0, 7),
+    PaddingRight = UDim.new(0, 7)
+}, FileList)
+
+local Status = Create("TextLabel", {
+    Position = UDim2.new(0, 14, 0, 352),
+    Size = UDim2.new(1, -28, 0, 24),
+    BackgroundTransparency = 1,
+    Text = "Status: Ready",
+    TextColor3 = CONFIG.MUTED,
+    TextSize = 11,
+    Font = Enum.Font.Gotham,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextTruncate = Enum.TextTruncate.AtEnd
+}, Main)
+
+local ImportButton = Create("TextButton", {
+    Position = UDim2.new(0, 12, 1, -49),
+    Size = UDim2.new(0.58, -10, 0, 36),
+    BackgroundColor3 = CONFIG.ACCENT,
+    Text = "IMPORT SELECTED",
+    TextColor3 = CONFIG.TEXT,
+    TextSize = 12,
+    Font = Enum.Font.GothamBold
+}, Main)
+Corner(ImportButton, 8)
+
+local CancelButton = Create("TextButton", {
+    Position = UDim2.new(0.58, 7, 1, -49),
+    Size = UDim2.new(0.42, -19, 0, 36),
+    BackgroundColor3 = Color3.fromRGB(65, 65, 82),
+    Text = "CANCEL",
+    TextColor3 = CONFIG.TEXT,
+    TextSize = 12,
+    Font = Enum.Font.GothamBold
+}, Main)
+Corner(CancelButton, 8)
+
+-- Minimized popup button
+local ReopenButton = Create("TextButton", {
+    Name = "Reopen",
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.new(0.5, 0, 0.8, 0),
+    Size = UDim2.new(0, 165, 0, 42),
+    BackgroundColor3 = CONFIG.ACCENT,
+    Text = "PUNAKAWAN IMPORTER",
+    TextColor3 = CONFIG.TEXT,
+    TextSize = 12,
+    Font = Enum.Font.GothamBold,
+    Visible = false
+}, ScreenGui)
+Corner(ReopenButton, 12)
+
+--========================================================--
+-- DRAGGABLE WINDOW
+--========================================================--
+
+local dragging = false
+local dragStart
+local startPosition
+
+Header.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+
+        dragging = true
+        dragStart = input.Position
+        startPosition = Main.Position
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (
+        input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch
+    ) then
+        local delta = input.Position - dragStart
+
+        Main.Position = UDim2.new(
+            startPosition.X.Scale,
+            startPosition.X.Offset + delta.X,
+            startPosition.Y.Scale,
+            startPosition.Y.Offset + delta.Y
+        )
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+
+--========================================================--
+-- FILE BROWSER
+--========================================================--
+
+local SelectedFile = nil
+local FileButtons = {}
+
+local function ClearFileList()
+    for _, object in ipairs(FileButtons) do
+        object:Destroy()
+    end
+
+    table.clear(FileButtons)
+    SelectedFile = nil
+end
+
+local function SetStatus(message)
+    Status.Text = "Status: " .. message
+end
+
+local function GetFiles()
+    local files = {}
+
+    -- Delta/executor-specific file API.
+    if type(listfiles) ~= "function" then
+        return nil, "Executor does not provide listfiles()"
+    end
+
+    local ok, result = pcall(function()
+        return listfiles(CONFIG.FOLDER)
+    end)
+
+    if not ok or type(result) ~= "table" then
+        return nil, "Cannot read Delta/Workspace"
+    end
+
+    for _, path in ipairs(result) do
+        if type(path) == "string" then
+            local lower = string.lower(path)
+            local extension = "." .. string.lower(CurrentFormat)
+
+            if lower:sub(-#extension) == extension then
+                table.insert(files, path)
+            end
+        end
+    end
+
+    table.sort(files)
+    return files
+end
+
+local function RefreshFiles()
+    ClearFileList()
+
+    local files, err = GetFiles()
+
+    if not files then
+        SetStatus(err)
+        return
+    end
+
+    local query = string.lower(SearchBox.Text)
+    local shown = 0
+
+    for _, path in ipairs(files) do
+        local name = path:gsub("\\", "/"):match("([^/]+)$") or path
+
+        if query == "" or string.find(string.lower(name), query, 1, true) then
+            shown = shown + 1
+
+            local button = Create("TextButton", {
+                Name = "File_" .. shown,
+                Size = UDim2.new(1, -4, 0, 34),
+                BackgroundColor3 = Color3.fromRGB(42, 42, 57),
+                Text = "  📦  " .. name,
+                TextColor3 = CONFIG.TEXT,
+                TextSize = 12,
+                Font = Enum.Font.Gotham,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                TextTruncate = Enum.TextTruncate.AtEnd,
+                LayoutOrder = shown
+            }, FileList)
+
+            Corner(button, 6)
+            table.insert(FileButtons, button)
+
+            button.Activated:Connect(function()
+                SelectedFile = path
+
+                for _, other in ipairs(FileButtons) do
+                    other.BackgroundColor3 = Color3.fromRGB(42, 42, 57)
                 end
+
+                button.BackgroundColor3 = CONFIG.ACCENT
+                SetStatus("Selected: " .. name)
             end)
         end
-    end)
-    topbar.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-            dragInput = input
+    end
+
+    if shown == 0 then
+        SetStatus("No " .. CurrentFormat .. " files found")
+    else
+        SetStatus(tostring(shown) .. " file(s) found")
+    end
+end
+
+for _, format in ipairs(Formats) do
+    local tab = Create("TextButton", {
+        Name = "Tab_" .. format.Name,
+        BackgroundColor3 = format.Name == CurrentFormat
+            and CONFIG.ACCENT or CONFIG.PANEL,
+        Text = format.Name,
+        TextColor3 = CONFIG.TEXT,
+        TextSize = 12,
+        Font = Enum.Font.GothamBold,
+        LayoutOrder = table.find(Formats, format)
+    }, TabHolder)
+
+    Corner(tab, 7)
+    Tabs[format.Name] = tab
+
+    tab.Activated:Connect(function()
+        CurrentFormat = format.Name
+
+        for name, other in pairs(Tabs) do
+            other.BackgroundColor3 =
+                name == CurrentFormat and CONFIG.ACCENT or CONFIG.PANEL
         end
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if input == dragInput and dragging then
-            local delta = input.Position - dragStart
-            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-        end
+
+        RefreshFiles()
     end)
 end
 
---------------------------------------------------------------------------------
--- 2. GUI CREATION
---------------------------------------------------------------------------------
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "DeltaDecalGui"
--- Mencoba memasukkan ke CoreGui agar aman dari reset character, jika gagal masuk ke PlayerGui
-local success = pcall(function() screenGui.Parent = CoreGui end)
-if not success then screenGui.Parent = player:WaitForChild("PlayerGui") end
+SearchBox:GetPropertyChangedSignal("Text"):Connect(RefreshFiles)
 
--- Tombol On/Off Melayang (Toggle UI)
-local toggleBtn = Instance.new("TextButton")
-toggleBtn.Name = "ToggleButton"
-toggleBtn.Size = UDim2.new(0, 90, 0, 35)
-toggleBtn.Position = UDim2.new(0, 10, 0.3, 0)
-toggleBtn.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
-toggleBtn.TextColor3 = Color3.fromRGB(0, 255, 150)
-toggleBtn.Text = "Decal UI [ON]"
-toggleBtn.Font = Enum.Font.SourceSansBold
-toggleBtn.TextSize = 13
-toggleBtn.Parent = screenGui
+--========================================================--
+-- BUTTONS
+--========================================================--
 
--- Main Frame (Jendela Utama)
-local mainFrame = Instance.new("Frame")
-mainFrame.Name = "MainFrame"
-mainFrame.Size = UDim2.new(0, 280, 0, 260)
-mainFrame.Position = UDim2.new(0.5, -140, 0.3, 0)
-mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
-mainFrame.BorderSizePixel = 0
-mainFrame.Parent = screenGui
-
--- Title Bar (Header)
-local titleBar = Instance.new("Frame")
-titleBar.Size = UDim2.new(1, 0, 0, 30)
-titleBar.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
-titleBar.Parent = mainFrame
-makeDraggable(titleBar, mainFrame)
-
-local titleText = Instance.new("TextLabel")
-titleText.Size = UDim2.new(0.7, 0, 1, 0)
-titleText.Position = UDim2.new(0, 10, 0, 0)
-titleText.BackgroundTransparency = 1
-titleText.Text = "Delta Decal Installer"
-titleText.TextColor3 = Color3.fromRGB(255, 255, 255)
-titleText.Font = Enum.Font.SourceSansBold
-titleText.TextXAlignment = Enum.TextXAlignment.Left
-titleText.Parent = titleBar
-
--- Tombol Minimize / Maximize
-local minMaxBtn = Instance.new("TextButton")
-minMaxBtn.Size = UDim2.new(0, 30, 0, 30)
-minMaxBtn.Position = UDim2.new(1, -30, 0, 0)
-minMaxBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 50)
-minMaxBtn.Text = "-"
-minMaxBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-minMaxBtn.Font = Enum.Font.SourceSansBold
-minMaxBtn.TextSize = 18
-minMaxBtn.Parent = titleBar
-
--- Content Frame
-local contentFrame = Instance.new("Frame")
-contentFrame.Name = "ContentFrame"
-contentFrame.Size = UDim2.new(1, 0, 1, -30)
-contentFrame.Position = UDim2.new(0, 0, 0, 30)
-contentFrame.BackgroundTransparency = 1
-contentFrame.Parent = mainFrame
-
---------------------------------------------------------------------------------
--- 3. INTERFACE ELEMENTS
---------------------------------------------------------------------------------
--- Status Target
-local statusLabel = Instance.new("TextLabel")
-statusLabel.Size = UDim2.new(1, -20, 0, 20)
-statusLabel.Position = UDim2.new(0, 10, 0, 10)
-statusLabel.Text = "Part: Belum Ada"
-statusLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-statusLabel.Font = Enum.Font.SourceSans
-statusLabel.TextSize = 14
-statusLabel.Parent = contentFrame
-
--- Tombol Pilih Part
-local selectPartBtn = Instance.new("TextButton")
-selectPartBtn.Size = UDim2.new(1, -20, 0, 30)
-selectPartBtn.Position = UDim2.new(0, 10, 0, 35)
-selectPartBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
-selectPartBtn.Text = "🎯 Pilih / Klik Part di Map"
-selectPartBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-selectPartBtn.Font = Enum.Font.SourceSansBold
-selectPartBtn.Parent = contentFrame
-
--- Input Box ID Decal
-local idBox = Instance.new("TextBox")
-idBox.Size = UDim2.new(1, -20, 0, 30)
-idBox.Position = UDim2.new(0, 10, 0, 75)
-idBox.PlaceholderText = "Tempel ID / Link Decal di sini..."
-idBox.Text = ""
-idBox.BackgroundColor3 = Color3.fromRGB(45, 45, 50)
-idBox.TextColor3 = Color3.fromRGB(255, 255, 255)
-idBox.Font = Enum.Font.SourceSans
-idBox.Parent = contentFrame
-
--- Tombol Switch Sisi (Face)
-local faceBtn = Instance.new("TextButton")
-faceBtn.Size = UDim2.new(1, -20, 0, 30)
-faceBtn.Position = UDim2.new(0, 10, 0, 115)
-faceBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
-faceBtn.Text = "Sisi (Face): Front"
-faceBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-faceBtn.Font = Enum.Font.SourceSans
-faceBtn.Parent = contentFrame
-
--- Tombol Eksekusi (Pasang)
-local applyBtn = Instance.new("TextButton")
-applyBtn.Size = UDim2.new(1, -20, 0, 35)
-applyBtn.Position = UDim2.new(0, 10, 0, 155)
-applyBtn.BackgroundColor3 = Color3.fromRGB(46, 139, 87)
-applyBtn.Text = "✅ PASANG / GANTI DECAL"
-applyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-applyBtn.Font = Enum.Font.SourceSansBold
-applyBtn.TextSize = 15
-applyBtn.Parent = contentFrame
-
---------------------------------------------------------------------------------
--- 4. LOGIC & FUNCTIONALITY
---------------------------------------------------------------------------------
--- Toggle Jendela Utama
-toggleBtn.MouseButton1Click:Connect(function()
-    mainFrame.Visible = not mainFrame.Visible
-    toggleBtn.Text = mainFrame.Visible and "Decal UI [ON]" or "Decal UI [OFF]"
+MinimizeButton.Activated:Connect(function()
+    Main.Visible = false
+    ReopenButton.Visible = true
 end)
 
--- Minimize / Maximize Window
-minMaxBtn.MouseButton1Click:Connect(function()
-    isMinimized = not isMinimized
-    if isMinimized then
-        contentFrame.Visible = false
-        mainFrame.Size = UDim2.new(0, 280, 0, 30)
-        minMaxBtn.Text = "+"
-    else
-        contentFrame.Visible = true
-        mainFrame.Size = UDim2.new(0, 280, 0, 205)
-        minMaxBtn.Text = "-"
-    end
+ReopenButton.Activated:Connect(function()
+    ReopenButton.Visible = false
+    Main.Visible = true
 end)
 
--- Ganti Sisi Part
-faceBtn.MouseButton1Click:Connect(function()
-    currentFaceIndex = (currentFaceIndex % #faces) + 1
-    local faceName = faces[currentFaceIndex]
-    selectedFace = Enum.NormalId[faceName]
-    faceBtn.Text = "Sisi (Face): " .. faceName
+CloseButton.Activated:Connect(function()
+    ScreenGui:Destroy()
 end)
 
--- Mode Memilih Part
-selectPartBtn.MouseButton1Click:Connect(function()
-    selectingMode = true
-    selectPartBtn.Text = "🔍 Klik Part di Layar..."
-    selectPartBtn.BackgroundColor3 = Color3.fromRGB(215, 120, 0)
+CancelButton.Activated:Connect(function()
+    SelectedFile = nil
+    SearchBox.Text = ""
+    RefreshFiles()
+    SetStatus("Selection cancelled")
 end)
 
-mouse.Button1Down:Connect(function()
-    if selectingMode then
-        local target = mouse.Target
-        if target and target:IsA("BasePart") then
-            selectedPart = target
-            statusLabel.Text = "Part: " .. target.Name
-            statusLabel.TextColor3 = Color3.fromRGB(0, 255, 150)
-        else
-            statusLabel.Text = "Part: Tidak Valid"
-            statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
-        end
-        selectingMode = false
-        selectPartBtn.Text = "🎯 Pilih / Klik Part di Map"
-        selectPartBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
-    end
-end)
-
--- Pasang/Ganti Decal
-applyBtn.MouseButton1Click:Connect(function()
-    if not selectedPart then
-        statusLabel.Text = "⚠️ Pilih Part Dulu!"
-        statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+ImportButton.Activated:Connect(function()
+    if not SelectedFile then
+        SetStatus("Select a file first")
         return
     end
 
-    local cleanId = idBox.Text:match("%d+")
-    if not cleanId then
-        statusLabel.Text = "⚠️ ID Decal Salah!"
-        statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
-        return
-    end
-
-    local textureId = "rbxassetid://" .. cleanId
-    local existingDecal = nil
-
-    for _, v in pairs(selectedPart:GetChildren()) do
-        if v:IsA("Decal") and v.Face == selectedFace then
-            existingDecal = v
-            break
-        end
-    end
-
-    if existingDecal then
-        existingDecal.Texture = textureId
-    else
-        local newDecal = Instance.new("Decal")
-        newDecal.Face = selectedFace
-        newDecal.Texture = textureId
-        newDecal.Parent = selectedPart
-    end
-
-    statusLabel.Text = "✅ Berhasil Dipasang!"
-    statusLabel.TextColor3 = Color3.fromRGB(0, 255, 150)
+    -- Reading a file does NOT import a Roblox model.
+    -- Actual import requires a compatible importer/API.
+    SetStatus("File selected; compatible import engine required")
+    warn("[PUNAKAWAN IMPORTER] Selected:", SelectedFile)
 end)
+
+RefreshFiles()
+
+print("[PUNAKAWAN COMMUNITY IMPORTER] GUI loaded")
