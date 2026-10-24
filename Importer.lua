@@ -10,47 +10,14 @@ end
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
-
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local ENV = _G
-
-pcall(function()
-    if type(getgenv) == "function" then
-        ENV = getgenv()
-    end
-end)
-
-local function getFunction(name)
-    local fn
-
-    pcall(function()
-        fn = ENV[name]
-    end)
-
-    if type(fn) == "function" then
-        return fn
-    end
-
-    pcall(function()
-        fn = getfenv()[name]
-    end)
-
-    if type(fn) == "function" then
-        return fn
-    end
-
-    return nil
-end
-
 --==================================================
--- TOGGLE EXISTING GUI
+-- CHECK EXISTING GUI
 --==================================================
 
-local existing = playerGui:FindFirstChild(
-    "PunakawanImporter"
-)
+local existing = playerGui:FindFirstChild("PunakawanImporter")
 
 if existing then
     local main = existing:FindFirstChild("Main")
@@ -61,7 +28,7 @@ if existing then
     end
 
     if toggle then
-        toggle.Visible = true
+        toggle.Visible = false
     end
 
     return
@@ -103,7 +70,6 @@ local function create(className, properties, parent)
     end
 
     object.Parent = parent
-
     return object
 end
 
@@ -113,8 +79,15 @@ local function addCorner(object, radius)
     }, object)
 end
 
+local function addStroke(object, color, thickness)
+    create("UIStroke", {
+        Color = color,
+        Thickness = thickness or 1,
+    }, object)
+end
+
 --==================================================
--- ROOT
+-- ROOT GUI
 --==================================================
 
 local gui = create("ScreenGui", {
@@ -125,7 +98,7 @@ local gui = create("ScreenGui", {
 }, playerGui)
 
 --==================================================
--- MAIN PANEL
+-- MAIN WINDOW
 --==================================================
 
 local main = create("Frame", {
@@ -137,11 +110,7 @@ local main = create("Frame", {
 }, gui)
 
 addCorner(main, 15)
-
-create("UIStroke", {
-    Color = C.Purple,
-    Thickness = 1.5,
-}, main)
+addStroke(main, C.Purple, 1.5)
 
 --==================================================
 -- FLOATING TOGGLE
@@ -160,12 +129,7 @@ local toggle = create("TextButton", {
 }, gui)
 
 addCorner(toggle, 27)
-
-create("UIStroke", {
-    Color = C.White,
-    Thickness = 1,
-    Transparency = 0.5,
-}, toggle)
+addStroke(toggle, C.White, 1)
 
 --==================================================
 -- HEADER
@@ -223,7 +187,7 @@ local minimize = create("TextButton", {
 addCorner(minimize)
 
 --==================================================
--- FORMAT SELECTION
+-- FORMAT SELECTOR
 --==================================================
 
 create("TextLabel", {
@@ -239,7 +203,7 @@ create("TextLabel", {
 
 local selectedType = "RBXM"
 
-local function makeButton(name, text, position, size, color)
+local function makeButton(name, text, position, size, color, parent)
     local button = create("TextButton", {
         Name = name,
         Size = size,
@@ -249,10 +213,9 @@ local function makeButton(name, text, position, size, color)
         TextColor3 = C.White,
         TextSize = 12,
         Font = Enum.Font.GothamBold,
-    }, main)
+    }, parent or main)
 
     addCorner(button)
-
     return button
 end
 
@@ -271,26 +234,6 @@ local placeButton = makeButton(
     UDim2.fromOffset(153, 36),
     C.Panel
 )
-
-local function selectType(kind)
-    selectedType = kind
-
-    modelButton.BackgroundColor3 =
-        kind == "RBXM" and C.Purple or C.Panel
-
-    placeButton.BackgroundColor3 =
-        kind == "RBXL" and C.Purple or C.Panel
-end
-
-modelButton.MouseButton1Click:Connect(function()
-    selectType("RBXM")
-    refreshFiles()
-end)
-
-placeButton.MouseButton1Click:Connect(function()
-    selectType("RBXL")
-    refreshFiles()
-end)
 
 --==================================================
 -- FILE LIST
@@ -352,7 +295,7 @@ local status = create("TextLabel", {
     Size = UDim2.new(1, -24, 0, 34),
     Position = UDim2.fromOffset(12, 333),
     BackgroundTransparency = 1,
-    Text = "Status: Memeriksa filesystem...",
+    Text = "Status: Siap memindai file.",
     TextColor3 = C.Gray,
     TextSize = 11,
     Font = Enum.Font.Gotham,
@@ -369,6 +312,30 @@ end
 -- FILE SCANNER
 --==================================================
 
+local function getExecutorFunction(name)
+    local fn
+
+    pcall(function()
+        fn = _G[name]
+    end)
+
+    if type(fn) == "function" then
+        return fn
+    end
+
+    if type(getfenv) == "function" then
+        pcall(function()
+            fn = getfenv(0)[name]
+        end)
+    end
+
+    if type(fn) == "function" then
+        return fn
+    end
+
+    return nil
+end
+
 local function clearFileList()
     for _, button in ipairs(fileButtons) do
         button:Destroy()
@@ -379,124 +346,115 @@ local function clearFileList()
 end
 
 local function matchesFormat(path)
-    local name = path:lower()
+    local lower = path:lower()
 
     if selectedType == "RBXM" then
-        return name:match("%.rbxm$") ~= nil
-            or name:match("%.rbxmx$") ~= nil
+        return lower:match("%.rbxm$") ~= nil
+            or lower:match("%.rbxmx$") ~= nil
     end
 
-    return name:match("%.rbxl$") ~= nil
-        or name:match("%.rbxlx$") ~= nil
+    return lower:match("%.rbxl$") ~= nil
+        or lower:match("%.rbxlx$") ~= nil
 end
 
-function refreshFiles()
+local function refreshFiles()
     clearFileList()
 
-    local listfilesFn = getFunction("listfiles")
-    local isfileFn = getFunction("isfile")
+    local listfilesFn = getExecutorFunction("listfiles")
+    local isfileFn = getExecutorFunction("isfile")
 
     if not listfilesFn then
-        setStatus(
-            "Fungsi listfiles tidak tersedia di executor.",
-            C.Red
-        )
+        setStatus("Executor tidak menyediakan listfiles().", C.Red)
         return
     end
 
-    local ok, result = pcall(function()
+    local ok, files = pcall(function()
         return listfilesFn(CONFIG.Folder)
     end)
 
     if not ok then
-        setStatus(
-            "Gagal membaca " .. CONFIG.Folder ..
-            " (" .. tostring(result) .. ")",
-            C.Red
-        )
+        setStatus("Gagal membaca folder Delta/Workspace/.", C.Red)
         return
     end
 
-    if type(result) ~= "table" then
-        setStatus("Hasil listfiles bukan tabel.", C.Red)
+    if type(files) ~= "table" then
+        setStatus("Hasil pemindaian tidak valid.", C.Red)
         return
     end
 
     local count = 0
 
-    for _, path in ipairs(result) do
+    for _, path in ipairs(files) do
         if type(path) == "string" and matchesFormat(path) then
             local valid = true
 
             if isfileFn then
-                local checkOK, isValid = pcall(
-                    isfileFn,
-                    path
-                )
-
-                valid = checkOK and isValid == true
+                local checkOK, result = pcall(isfileFn, path)
+                valid = checkOK and result == true
             end
 
             if valid then
-                count += 1
+                count = count + 1
 
-                local name =
-                    path:match("([^/\\]+)$") or path
+                local name = path:match("([^/\\]+)$") or path
 
-                local button = create("TextButton", {
-                    Name = "File_" .. count,
-                    Size = UDim2.new(1, -4, 0, 34),
-                    BackgroundColor3 = C.Background,
-                    Text = "  " .. name,
-                    TextColor3 = C.White,
-                    TextSize = 11,
-                    Font = Enum.Font.Gotham,
-                    TextXAlignment = Enum.TextXAlignment.Left,
-                    LayoutOrder = count,
-                }, fileList)
+                local button = makeButton(
+                    "File_" .. count,
+                    "  " .. name,
+                    UDim2.new(),
+                    UDim2.new(1, -4, 0, 34),
+                    C.Background,
+                    fileList
+                )
 
-                addCorner(button)
+                button.LayoutOrder = count
+                button.TextXAlignment = Enum.TextXAlignment.Left
+                button.Font = Enum.Font.Gotham
+                button.TextSize = 11
 
                 table.insert(fileButtons, button)
 
                 button.MouseButton1Click:Connect(function()
                     selectedFile = path
 
-                    for _, other in ipairs(fileButtons) do
-                        other.BackgroundColor3 = C.Background
+                    for _, item in ipairs(fileButtons) do
+                        item.BackgroundColor3 = C.Background
                     end
 
                     button.BackgroundColor3 = C.PurpleDark
-
-                    setStatus(
-                        "File dipilih: " .. name,
-                        C.Green
-                    )
+                    setStatus("Dipilih: " .. name, C.Green)
                 end)
             end
         end
     end
 
     fileList.CanvasSize = UDim2.new(
-        0,
-        0,
-        0,
-        layout.AbsoluteContentSize.Y + 15
+        0, 0, 0, layout.AbsoluteContentSize.Y + 15
     )
 
     if count == 0 then
         setStatus(
-            "Tidak ada file " .. selectedType ..
-            ". Folder: " .. CONFIG.Folder,
+            "File " .. selectedType .. " tidak ditemukan.",
             C.Gray
         )
     else
-        setStatus(
-            tostring(count) .. " file ditemukan.",
-            C.Green
-        )
+        setStatus(tostring(count) .. " file ditemukan.", C.Green)
     end
 end
+
+modelButton.MouseButton1Click:Connect(function()
+    selectedType = "RBXM"
+    modelButton.BackgroundColor3 = C.Purple
+    placeButton.BackgroundColor3 = C.Panel
+    refreshFiles()
+end)
+
+placeButton.MouseButton1Click:Connect(function()
+    selectedType = "RBXL"
+    modelButton.BackgroundColor3 = C.Panel
+    placeButton.BackgroundColor3 = C.Purple
+    refreshFiles()
+end)
 
 refreshButton.MouseButton1Click:Connect(refreshFiles)
 
@@ -518,13 +476,10 @@ importButton.MouseButton1Click:Connect(function()
         return
     end
 
-    local readfileFn = getFunction("readfile")
+    local readfileFn = getExecutorFunction("readfile")
 
     if not readfileFn then
-        setStatus(
-            "Fungsi readfile tidak tersedia.",
-            C.Red
-        )
+        setStatus("Executor tidak menyediakan readfile().", C.Red)
         return
     end
 
@@ -533,19 +488,19 @@ importButton.MouseButton1Click:Connect(function()
     end)
 
     if not ok or type(data) ~= "string" then
-        setStatus("File gagal dibaca.", C.Red)
+        setStatus("File tidak dapat dibaca.", C.Red)
         return
     end
 
     setStatus(
-        "File terbaca (" .. #data ..
-        " byte). Parser impor belum tersedia.",
+        "File terbaca: " .. #data ..
+        " byte. Parser impor belum tersedia.",
         C.Gray
     )
 end)
 
 --==================================================
--- MINIMIZE / RESTORE
+-- MINIMIZE AND RESTORE
 --==================================================
 
 minimize.MouseButton1Click:Connect(function()
@@ -601,58 +556,7 @@ UIS.InputEnded:Connect(function(input)
 end)
 
 --==================================================
--- INITIALIZE
+-- START
 --==================================================
-
-refreshFiles()RBXM/RBXL parser
-    -- is included in this GUI.
-    setStatus(
-        "File terbaca (" .. #data ..
-        " byte), tetapi parser impor belum tersedia.",
-        C.Gray
-    )
-end)
-
-close.MouseButton1Click:Connect(function()
-    gui:Destroy()
-end)
-
--- DRAG WINDOW
-local dragging = false
-local dragStart
-local startPosition
-
-header.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch
-        or input.UserInputType == Enum.UserInputType.MouseButton1 then
-
-        dragging = true
-        dragStart = input.Position
-        startPosition = main.Position
-    end
-end)
-
-UIS.InputChanged:Connect(function(input)
-    if dragging and (
-        input.UserInputType == Enum.UserInputType.Touch
-        or input.UserInputType == Enum.UserInputType.MouseMovement
-    ) then
-        local delta = input.Position - dragStart
-
-        main.Position = UDim2.new(
-            startPosition.X.Scale,
-            startPosition.X.Offset + delta.X,
-            startPosition.Y.Scale,
-            startPosition.Y.Offset + delta.Y
-        )
-    end
-end)
-
-UIS.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch
-        or input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = false
-    end
-end)
 
 refreshFiles()
