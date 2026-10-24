@@ -1,264 +1,222 @@
 --==============================================================
 -- PUNAKAWAN COMMUNITY IMPORTER
--- FILE SCANNER DIAGNOSTIC
--- Formats: RBXM, RBXMX, RBXL, RBXLX
+-- File Scanner GUI for Delta
 --==============================================================
-
-repeat task.wait() until game:IsLoaded()
 
 local Players = game:GetService("Players")
+local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
 
-local player = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
+local Player = Players.LocalPlayer
 
 --==============================================================
--- EXECUTOR API
+-- CONFIGURATION
 --==============================================================
 
-local function getAPI(name)
-    local ok, result = pcall(function()
-        if type(getgenv) == "function" then
-            local env = getgenv()
-            if type(env[name]) == "function" then
-                return env[name]
-            end
-        end
+local APP_NAME = "PUNAKAWAN COMMUNITY IMPORTER"
 
-        if type(getfenv) == "function" then
-            local env = getfenv(0)
-            if type(env[name]) == "function" then
-                return env[name]
-            end
-        end
+local EXTENSIONS = {
+    RBXM = {".rbxm"},
+    RBXMX = {".rbxmx"},
+    RBXL = {".rbxl"},
+    RBXLX = {".rbxlx"}
+}
 
-        if type(_G) == "table"
-            and type(_G[name]) == "function" then
-            return _G[name]
-        end
-    end)
+local SEARCH_PATHS = {
+    "Delta/Workspace",
+    "Delta\\Workspace",
+    "Workspace",
+    "workspace",
+    "Delta",
+    ""
+}
 
-    if ok then
-        return result
+--==============================================================
+-- CLEANUP OLD GUI
+--==============================================================
+
+pcall(function()
+    local old = CoreGui:FindFirstChild("PunakawanCommunityImporter")
+    if old then
+        old:Destroy()
+    end
+end)
+
+--==============================================================
+-- GUI HELPERS
+--==============================================================
+
+local function create(className, properties, parent)
+    local object = Instance.new(className)
+
+    for property, value in pairs(properties or {}) do
+        pcall(function()
+            object[property] = value
+        end)
     end
 
-    return nil
+    object.Parent = parent
+    return object
 end
 
-local listfilesFn = getAPI("listfiles")
-local isfolderFn = getAPI("isfolder")
+local function corner(parent, radius)
+    create("UICorner", {
+        CornerRadius = UDim.new(0, radius or 8)
+    }, parent)
+end
+
+local function stroke(parent, color, thickness)
+    create("UIStroke", {
+        Color = color or Color3.fromRGB(75, 70, 90),
+        Thickness = thickness or 1
+    }, parent)
+end
 
 --==============================================================
--- GUI
+-- MAIN GUI
 --==============================================================
 
-local previous = playerGui:FindFirstChild("PunakawanCommunityImporter")
-if previous then
-    previous:Destroy()
-end
+local gui = create("ScreenGui", {
+    Name = "PunakawanCommunityImporter",
+    ResetOnSpawn = false,
+    IgnoreGuiInset = true,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+}, CoreGui)
 
-local gui = Instance.new("ScreenGui")
-gui.Name = "PunakawanCommunityImporter"
-gui.ResetOnSpawn = false
-gui.IgnoreGuiInset = true
-gui.DisplayOrder = 999
-gui.Parent = playerGui
+local main = create("Frame", {
+    Name = "Main",
+    Size = UDim2.fromOffset(390, 455),
+    Position = UDim2.new(0.5, -195, 0.5, -227),
+    BackgroundColor3 = Color3.fromRGB(22, 21, 27),
+    BorderSizePixel = 0
+}, gui)
+corner(main, 14)
+stroke(main, Color3.fromRGB(75, 70, 90), 1)
 
-local main = Instance.new("Frame")
-main.Name = "Main"
-main.Size = UDim2.new(0, 350, 0, 430)
-main.Position = UDim2.new(0.5, -175, 0.5, -215)
-main.BackgroundColor3 = Color3.fromRGB(23, 20, 36)
-main.BorderSizePixel = 0
-main.Active = true
-main.Parent = gui
+local header = create("Frame", {
+    Size = UDim2.new(1, 0, 0, 45),
+    BackgroundColor3 = Color3.fromRGB(31, 29, 38),
+    BorderSizePixel = 0
+}, main)
+corner(header, 12)
 
-local mainCorner = Instance.new("UICorner")
-mainCorner.CornerRadius = UDim.new(0, 12)
-mainCorner.Parent = main
+local title = create("TextLabel", {
+    Position = UDim2.fromOffset(14, 0),
+    Size = UDim2.new(1, -110, 1, 0),
+    BackgroundTransparency = 1,
+    Text = "PUNAKAWAN IMPORTER",
+    TextColor3 = Color3.fromRGB(245, 242, 255),
+    TextSize = 14,
+    Font = Enum.Font.GothamBold,
+    TextXAlignment = Enum.TextXAlignment.Left
+}, header)
 
-local mainStroke = Instance.new("UIStroke")
-mainStroke.Color = Color3.fromRGB(135, 85, 255)
-mainStroke.Thickness = 2
-mainStroke.Parent = main
+local minimizeButton = create("TextButton", {
+    Position = UDim2.new(1, -76, 0, 7),
+    Size = UDim2.fromOffset(30, 30),
+    Text = "—",
+    TextSize = 18,
+    Font = Enum.Font.GothamBold,
+    TextColor3 = Color3.new(1, 1, 1),
+    BackgroundColor3 = Color3.fromRGB(48, 45, 58),
+    BorderSizePixel = 0
+}, header)
+corner(minimizeButton, 8)
 
-local function makeLabel(name, text, position, size, textSize)
-    local label = Instance.new("TextLabel")
-    label.Name = name
-    label.Text = text
-    label.Position = position
-    label.Size = size
-    label.BackgroundTransparency = 1
-    label.TextColor3 = Color3.fromRGB(245, 242, 255)
-    label.Font = Enum.Font.Gotham
-    label.TextSize = textSize or 12
-    label.TextWrapped = true
-    label.Parent = main
-    return label
-end
+local closeButton = create("TextButton", {
+    Position = UDim2.new(1, -39, 0, 7),
+    Size = UDim2.fromOffset(30, 30),
+    Text = "×",
+    TextSize = 20,
+    Font = Enum.Font.GothamBold,
+    TextColor3 = Color3.new(1, 1, 1),
+    BackgroundColor3 = Color3.fromRGB(48, 45, 58),
+    BorderSizePixel = 0
+}, header)
+corner(closeButton, 8)
 
-local function makeButton(name, text, position, size, color)
-    local button = Instance.new("TextButton")
-    button.Name = name
-    button.Text = text
-    button.Position = position
-    button.Size = size
-    button.BackgroundColor3 = color or Color3.fromRGB(85, 55, 145)
-    button.TextColor3 = Color3.new(1, 1, 1)
-    button.Font = Enum.Font.GothamSemibold
-    button.TextSize = 11
-    button.Parent = main
+local scanButton = create("TextButton", {
+    Position = UDim2.fromOffset(12, 55),
+    Size = UDim2.new(1, -24, 0, 38),
+    Text = "SCAN FILES",
+    TextSize = 13,
+    Font = Enum.Font.GothamBold,
+    TextColor3 = Color3.fromRGB(35, 32, 45),
+    BackgroundColor3 = Color3.fromRGB(240, 237, 248),
+    BorderSizePixel = 0
+}, main)
+corner(scanButton, 8)
 
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 7)
-    corner.Parent = button
+local searchBox = create("TextBox", {
+    Position = UDim2.fromOffset(12, 101),
+    Size = UDim2.new(1, -24, 0, 32),
+    PlaceholderText = "Search files...",
+    Text = "",
+    ClearTextOnFocus = false,
+    TextSize = 12,
+    Font = Enum.Font.Gotham,
+    TextColor3 = Color3.new(1, 1, 1),
+    PlaceholderColor3 = Color3.fromRGB(150, 145, 165),
+    BackgroundColor3 = Color3.fromRGB(35, 33, 43),
+    BorderSizePixel = 0
+}, main)
+corner(searchBox, 7)
 
-    return button
-end
+local filterFrame = create("Frame", {
+    Position = UDim2.fromOffset(12, 141),
+    Size = UDim2.new(1, -24, 0, 30),
+    BackgroundTransparency = 1
+}, main)
 
-makeLabel(
-    "Title",
-    "PUNAKAWAN COMMUNITY IMPORTER",
-    UDim2.new(0, 12, 0, 8),
-    UDim2.new(1, -24, 0, 28),
-    13
-).Font = Enum.Font.GothamBold
+local listFrame = create("ScrollingFrame", {
+    Position = UDim2.fromOffset(12, 179),
+    Size = UDim2.new(1, -24, 1, -222),
+    BackgroundColor3 = Color3.fromRGB(29, 27, 35),
+    BorderSizePixel = 0,
+    ScrollBarThickness = 4,
+    ScrollBarImageColor3 = Color3.fromRGB(130, 120, 155),
+    CanvasSize = UDim2.new(0, 0, 0, 0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y
+}, main)
+corner(listFrame, 9)
 
-makeLabel(
-    "Subtitle",
-    "Mobile file scanner",
-    UDim2.new(0, 12, 0, 36),
-    UDim2.new(1, -24, 0, 20),
-    10
-)
+local listLayout = create("UIListLayout", {
+    Padding = UDim.new(0, 6),
+    SortOrder = Enum.SortOrder.LayoutOrder
+}, listFrame)
 
-local search = Instance.new("TextBox")
-search.Name = "SearchBox"
-search.PlaceholderText = "Cari nama file..."
-search.Text = ""
-search.Position = UDim2.new(0, 12, 0, 62)
-search.Size = UDim2.new(1, -24, 0, 34)
-search.BackgroundColor3 = Color3.fromRGB(38, 33, 54)
-search.TextColor3 = Color3.new(1, 1, 1)
-search.PlaceholderColor3 = Color3.fromRGB(170, 165, 185)
-search.Font = Enum.Font.Gotham
-search.TextSize = 12
-search.ClearTextOnFocus = false
-search.Parent = main
+create("UIPadding", {
+    PaddingTop = UDim.new(0, 7),
+    PaddingBottom = UDim.new(0, 7),
+    PaddingLeft = UDim.new(0, 7),
+    PaddingRight = UDim.new(0, 7)
+}, listFrame)
 
-local searchCorner = Instance.new("UICorner")
-searchCorner.CornerRadius = UDim.new(0, 7)
-searchCorner.Parent = search
-
-local formats = {"ALL", "RBXM", "RBXMX", "RBXL", "RBXLX"}
-local selectedFormat = "ALL"
-local formatButtons = {}
-
-for i, format in ipairs(formats) do
-    local button = makeButton(
-        "Tab" .. format,
-        format,
-        UDim2.new(0, 12 + (i - 1) * 66, 0, 104),
-        UDim2.new(0, 62, 0, 29),
-        format == selectedFormat
-            and Color3.fromRGB(135, 85, 255)
-            or Color3.fromRGB(47, 41, 64)
-    )
-
-    button.TextSize = 9
-    formatButtons[format] = button
-end
-
-local countLabel = makeLabel(
-    "FileCount",
-    "File ditemukan: 0",
-    UDim2.new(0, 12, 0, 140),
-    UDim2.new(1, -24, 0, 20),
-    11
-)
-countLabel.TextXAlignment = Enum.TextXAlignment.Left
-
-local fileList = Instance.new("ScrollingFrame")
-fileList.Name = "FileList"
-fileList.Position = UDim2.new(0, 12, 0, 164)
-fileList.Size = UDim2.new(1, -24, 0, 160)
-fileList.BackgroundColor3 = Color3.fromRGB(31, 27, 44)
-fileList.BorderSizePixel = 0
-fileList.ScrollBarThickness = 4
-fileList.AutomaticCanvasSize = Enum.AutomaticSize.Y
-fileList.CanvasSize = UDim2.new(0, 0, 0, 0)
-fileList.Parent = main
-
-local listCorner = Instance.new("UICorner")
-listCorner.CornerRadius = UDim.new(0, 7)
-listCorner.Parent = fileList
-
-local listLayout = Instance.new("UIListLayout")
-listLayout.Padding = UDim.new(0, 4)
-listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-listLayout.Parent = fileList
-
-local listPadding = Instance.new("UIPadding")
-listPadding.PaddingTop = UDim.new(0, 5)
-listPadding.PaddingLeft = UDim.new(0, 5)
-listPadding.PaddingRight = UDim.new(0, 5)
-listPadding.PaddingBottom = UDim.new(0, 5)
-listPadding.Parent = fileList
-
-local status = makeLabel(
-    "Status",
-    "Tekan SCAN FILE.",
-    UDim2.new(0, 12, 0, 330),
-    UDim2.new(1, -24, 0, 39),
-    10
-)
-status.TextXAlignment = Enum.TextXAlignment.Left
-
-local scanButton = makeButton(
-    "ScanButton",
-    "SCAN FILE",
-    UDim2.new(0, 12, 0, 374),
-    UDim2.new(0.5, -18, 0, 32),
-    Color3.fromRGB(105, 65, 190)
-)
-
-local importButton = makeButton(
-    "ImportButton",
-    "IMPORT",
-    UDim2.new(0.5, 6, 0, 374),
-    UDim2.new(0.5, -18, 0, 32),
-    Color3.fromRGB(45, 130, 95)
-)
-
-local cancelButton = makeButton(
-    "CancelButton",
-    "CANCEL",
-    UDim2.new(0, 12, 0, 412),
-    UDim2.new(1, -24, 0, 25),
-    Color3.fromRGB(70, 60, 85)
-)
+local status = create("TextLabel", {
+    Position = UDim2.new(0, 12, 1, -32),
+    Size = UDim2.new(1, -24, 0, 22),
+    BackgroundTransparency = 1,
+    Text = "Status: Ready | Files: 0",
+    TextColor3 = Color3.fromRGB(165, 160, 180),
+    TextSize = 11,
+    Font = Enum.Font.Gotham,
+    TextXAlignment = Enum.TextXAlignment.Left
+}, main)
 
 --==============================================================
--- DRAG GUI
+-- DRAGGABLE WINDOW
 --==============================================================
 
 local dragging = false
 local dragStart
 local startPosition
 
-main.InputBegan:Connect(function(input)
+header.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
         or input.UserInputType == Enum.UserInputType.Touch then
-
         dragging = true
         dragStart = input.Position
         startPosition = main.Position
-
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
-            end
-        end)
     end
 end)
 
@@ -268,6 +226,7 @@ UserInputService.InputChanged:Connect(function(input)
         or input.UserInputType == Enum.UserInputType.Touch
     ) then
         local delta = input.Position - dragStart
+
         main.Position = UDim2.new(
             startPosition.X.Scale,
             startPosition.X.Offset + delta.X,
@@ -277,83 +236,149 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+
 --==============================================================
--- SCANNER
+-- FILE SCANNER
 --==============================================================
 
 local allFiles = {}
-local selectedFile
+local activeFilter = "ALL"
+
+local function normalizePath(path)
+    path = tostring(path):gsub("\\", "/")
+    return path
+end
 
 local function getExtension(path)
-    local lower = string.lower(path)
+    local lower = normalizePath(path):lower()
 
-    if lower:match("%.rbxmx$") then return "RBXMX" end
-    if lower:match("%.rbxlx$") then return "RBXLX" end
-    if lower:match("%.rbxm$") then return "RBXM" end
-    if lower:match("%.rbxl$") then return "RBXL" end
+    if lower:match("%.rbxm$") then
+        return "RBXM"
+    elseif lower:match("%.rbxmx$") then
+        return "RBXMX"
+    elseif lower:match("%.rbxl$") then
+        return "RBXL"
+    elseif lower:match("%.rbxlx$") then
+        return "RBXLX"
+    end
 
     return nil
 end
 
-local function getFileName(path)
-    return path:match("[^/\\]+$") or path
+local function safeListFiles(path)
+    if type(listfiles) ~= "function" then
+        return nil, "listfiles tidak tersedia"
+    end
+
+    local ok, result
+
+    if path == "" then
+        ok, result = pcall(listfiles)
+        if not ok then
+            ok, result = pcall(listfiles, "")
+        end
+    else
+        ok, result = pcall(listfiles, path)
+    end
+
+    if ok and type(result) == "table" then
+        return result
+    end
+
+    return nil, tostring(result)
+end
+
+local function safeIsFolder(path)
+    if type(isfolder) ~= "function" then
+        return false
+    end
+
+    local ok, result = pcall(isfolder, path)
+    return ok and result == true
 end
 
 local function scanFiles()
-    if type(listfilesFn) ~= "function" then
-        return nil, "API listfiles tidak tersedia di Delta."
+    allFiles = {}
+
+    if type(listfiles) ~= "function" then
+        status.Text = "Error: Delta tidak menyediakan listfiles."
+        return
     end
 
-    local pathsToTry = {
-        "Delta/Workspace",
-        "Delta\\Workspace",
-        "Workspace",
-        "workspace",
-        "Delta",
-    }
+    local seen = {}
+    local foldersToScan = {}
+    local scannedFolders = {}
 
-    local results = {}
-    local seenFiles = {}
-    local seenFolders = {}
-    local queue = {}
-
-    for _, path in ipairs(pathsToTry) do
-        table.insert(queue, path)
+    for _, path in ipairs(SEARCH_PATHS) do
+        if path == "" or safeIsFolder(path) then
+            table.insert(foldersToScan, path)
+        end
     end
 
-    local index = 1
-    local scanned = 0
-    local readable = 0
+    -- Cari file pada folder umum terlebih dahulu.
+    for _, folder in ipairs(foldersToScan) do
+        local entries = safeListFiles(folder)
 
-    while index <= #queue and scanned < 300 do
-        local folder = queue[index]
-        index += 1
+        if entries then
+            for _, entry in ipairs(entries) do
+                if type(entry) == "string" then
+                    local fullPath = normalizePath(entry)
+                    local extension = getExtension(fullPath)
 
-        if not seenFolders[folder] then
-            seenFolders[folder] = true
-            scanned += 1
+                    if extension then
+                        local key = fullPath:lower()
 
-            local ok, entries = pcall(function()
-                return listfilesFn(folder)
-            end)
+                        if not seen[key] then
+                            seen[key] = true
 
-            if ok and type(entries) == "table" then
-                readable += 1
+                            table.insert(allFiles, {
+                                path = fullPath,
+                                name = fullPath:match("([^/]+)$") or fullPath,
+                                extension = extension
+                            })
+                        end
+                    elseif safeIsFolder(entry) then
+                        table.insert(foldersToScan, entry)
+                    end
+                end
+            end
+        end
+    end
 
-                for _, path in ipairs(entries) do
-                    if type(path) == "string" then
-                        if getExtension(path) then
-                            if not seenFiles[path] then
-                                seenFiles[path] = true
-                                table.insert(results, path)
-                            end
-                        elseif type(isfolderFn) == "function" then
-                            local folderOK, isDir = pcall(function()
-                                return isfolderFn(path)
-                            end)
+    -- Coba subfolder satu tingkat tanpa pemindaian rekursif tanpa batas.
+    local initialFolders = #foldersToScan
 
-                            if folderOK and isDir and not seenFolders[path] then
-                                table.insert(queue, path)
+    for i = 1, math.min(initialFolders, 20) do
+        local folder = foldersToScan[i]
+
+        if folder ~= "" and not scannedFolders[folder] then
+            scannedFolders[folder] = true
+
+            local entries = safeListFiles(folder)
+
+            if entries then
+                for _, entry in ipairs(entries) do
+                    if type(entry) == "string" then
+                        local fullPath = normalizePath(entry)
+                        local extension = getExtension(fullPath)
+
+                        if extension then
+                            local key = fullPath:lower()
+
+                            if not seen[key] then
+                                seen[key] = true
+
+                                table.insert(allFiles, {
+                                    path = fullPath,
+                                    name = fullPath:match("([^/]+)$") or fullPath,
+                                    extension = extension
+                                })
                             end
                         end
                     end
@@ -362,149 +387,278 @@ local function scanFiles()
         end
     end
 
-    table.sort(results, function(a, b)
-        return string.lower(a) < string.lower(b)
+    table.sort(allFiles, function(a, b)
+        return a.name:lower() < b.name:lower()
     end)
-
-    return results, nil, readable
 end
 
-local function clearList()
-    for _, child in ipairs(fileList:GetChildren()) do
-        if child:IsA("TextButton") then
+--==============================================================
+-- FILTER BUTTONS
+--==============================================================
+
+local filterNames = {"ALL", "RBXM", "RBXMX", "RBXL", "RBXLX"}
+local filterButtons = {}
+
+for i, name in ipairs(filterNames) do
+    local button = create("TextButton", {
+        Position = UDim2.new((i - 1) * 0.2, 2, 0, 0),
+        Size = UDim2.new(0.2, -4, 1, 0),
+        Text = name,
+        TextSize = 10,
+        Font = Enum.Font.GothamBold,
+        TextColor3 = Color3.new(1, 1, 1),
+        BackgroundColor3 = Color3.fromRGB(48, 45, 58),
+        BorderSizePixel = 0
+    }, filterFrame)
+
+    corner(button, 6)
+    filterButtons[name] = button
+
+    button.Activated:Connect(function()
+        activeFilter = name
+
+        for filterName, filterButton in pairs(filterButtons) do
+            filterButton.BackgroundColor3 =
+                filterName == activeFilter
+                and Color3.fromRGB(105, 82, 150)
+                or Color3.fromRGB(48, 45, 58)
+        end
+
+        -- Refresh daftar sesuai filter.
+        local function refresh()
+            for _, child in ipairs(listFrame:GetChildren()) do
+                if child:IsA("Frame") then
+                    child:Destroy()
+                end
+            end
+
+            local query = searchBox.Text:lower()
+            local displayed = 0
+
+            for _, file in ipairs(allFiles) do
+                local matchesFilter =
+                    activeFilter == "ALL"
+                    or file.extension == activeFilter
+
+                local matchesSearch =
+                    query == ""
+                    or file.name:lower():find(query, 1, true) ~= nil
+
+                if matchesFilter and matchesSearch then
+                    displayed += 1
+
+                    local row = create("Frame", {
+                        Size = UDim2.new(1, -4, 0, 55),
+                        BackgroundColor3 = Color3.fromRGB(39, 37, 47),
+                        BorderSizePixel = 0,
+                        LayoutOrder = displayed
+                    }, listFrame)
+                    corner(row, 7)
+
+                    create("TextLabel", {
+                        Position = UDim2.fromOffset(8, 4),
+                        Size = UDim2.new(1, -94, 0, 25),
+                        BackgroundTransparency = 1,
+                        Text = file.name,
+                        TextColor3 = Color3.fromRGB(245, 242, 255),
+                        TextSize = 11,
+                        Font = Enum.Font.GothamSemibold,
+                        TextXAlignment = Enum.TextXAlignment.Left,
+                        TextTruncate = Enum.TextTruncate.AtEnd
+                    }, row)
+
+                    create("TextLabel", {
+                        Position = UDim2.fromOffset(8, 29),
+                        Size = UDim2.new(1, -94, 0, 18),
+                        BackgroundTransparency = 1,
+                        Text = file.extension .. " | " .. file.path,
+                        TextColor3 = Color3.fromRGB(155, 150, 170),
+                        TextSize = 9,
+                        Font = Enum.Font.Gotham,
+                        TextXAlignment = Enum.TextXAlignment.Left,
+                        TextTruncate = Enum.TextTruncate.AtEnd
+                    }, row)
+
+                    local insertButton = create("TextButton", {
+                        Position = UDim2.new(1, -78, 0.5, -14),
+                        Size = UDim2.fromOffset(70, 28),
+                        Text = "IMPORT",
+                        TextSize = 10,
+                        Font = Enum.Font.GothamBold,
+                        TextColor3 = Color3.new(1, 1, 1),
+                        BackgroundColor3 = Color3.fromRGB(88, 72, 112),
+                        BorderSizePixel = 0
+                    }, row)
+                    corner(insertButton, 6)
+
+                    insertButton.Activated:Connect(function()
+                        status.Text =
+                            "File terpilih: " .. file.name
+                            .. " | API import belum terkonfirmasi."
+                        warn("[PUNAKAWAN] File path:", file.path)
+                        warn("[PUNAKAWAN] Delta harus menyediakan API impor yang sesuai untuk memasukkan model.")
+                    end)
+                end
+            end
+
+            status.Text = "Status: Ready | Files: "
+                .. tostring(#allFiles)
+                .. " | Shown: "
+                .. tostring(displayed)
+        end
+
+        refresh()
+    end)
+end
+
+--==============================================================
+-- REFRESH LIST
+--==============================================================
+
+local function refreshList()
+    for _, child in ipairs(listFrame:GetChildren()) do
+        if child:IsA("Frame") then
             child:Destroy()
         end
     end
-end
 
-local function refreshList()
-    clearList()
+    local query = searchBox.Text:lower()
+    local displayed = 0
 
-    local visible = 0
-    local query = string.lower(search.Text)
+    for _, file in ipairs(allFiles) do
+        local matchesFilter =
+            activeFilter == "ALL"
+            or file.extension == activeFilter
 
-    for _, path in ipairs(allFiles) do
-        local ext = getExtension(path)
-        local name = getFileName(path)
+        local matchesSearch =
+            query == ""
+            or file.name:lower():find(query, 1, true) ~= nil
 
-        if ext and
-            (selectedFormat == "ALL" or ext == selectedFormat) and
-            (query == "" or string.find(string.lower(name), query, 1, true)) then
+        if matchesFilter and matchesSearch then
+            displayed += 1
 
-            visible += 1
+            local row = create("Frame", {
+                Size = UDim2.new(1, -4, 0, 55),
+                BackgroundColor3 = Color3.fromRGB(39, 37, 47),
+                BorderSizePixel = 0,
+                LayoutOrder = displayed
+            }, listFrame)
+            corner(row, 7)
 
-            local row = Instance.new("TextButton")
-            row.Name = "File" .. visible
-            row.Size = UDim2.new(1, -2, 0, 32)
-            row.BackgroundColor3 = Color3.fromRGB(48, 41, 66)
-            row.TextColor3 = Color3.new(1, 1, 1)
-            row.Text = "[" .. ext .. "] " .. name
-            row.TextSize = 10
-            row.TextXAlignment = Enum.TextXAlignment.Left
-            row.TextTruncate = Enum.TextTruncate.AtEnd
-            row.Font = Enum.Font.Gotham
-            row.LayoutOrder = visible
-            row.Parent = fileList
+            create("TextLabel", {
+                Position = UDim2.fromOffset(8, 4),
+                Size = UDim2.new(1, -94, 0, 25),
+                BackgroundTransparency = 1,
+                Text = file.name,
+                TextColor3 = Color3.fromRGB(245, 242, 255),
+                TextSize = 11,
+                Font = Enum.Font.GothamSemibold,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                TextTruncate = Enum.TextTruncate.AtEnd
+            }, row)
 
-            local corner = Instance.new("UICorner")
-            corner.CornerRadius = UDim.new(0, 5)
-            corner.Parent = row
+            create("TextLabel", {
+                Position = UDim2.fromOffset(8, 29),
+                Size = UDim2.new(1, -94, 0, 18),
+                BackgroundTransparency = 1,
+                Text = file.extension .. " | " .. file.path,
+                TextColor3 = Color3.fromRGB(155, 150, 170),
+                TextSize = 9,
+                Font = Enum.Font.Gotham,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                TextTruncate = Enum.TextTruncate.AtEnd
+            }, row)
 
-            row.MouseButton1Click:Connect(function()
-                selectedFile = path
-                status.Text = "Dipilih: " .. name
+            local insertButton = create("TextButton", {
+                Position = UDim2.new(1, -78, 0.5, -14),
+                Size = UDim2.fromOffset(70, 28),
+                Text = "IMPORT",
+                TextSize = 10,
+                Font = Enum.Font.GothamBold,
+                TextColor3 = Color3.new(1, 1, 1),
+                BackgroundColor3 = Color3.fromRGB(88, 72, 112),
+                BorderSizePixel = 0
+            }, row)
+            corner(insertButton, 6)
 
-                for _, child in ipairs(fileList:GetChildren()) do
-                    if child:IsA("TextButton") then
-                        child.BackgroundColor3 = Color3.fromRGB(48, 41, 66)
-                    end
-                end
-
-                row.BackgroundColor3 = Color3.fromRGB(105, 65, 150)
+            insertButton.Activated:Connect(function()
+                status.Text = "File terpilih: " .. file.name
+                warn("[PUNAKAWAN] File path:", file.path)
+                warn("[PUNAKAWAN] Tombol ini belum memasukkan model; API impor Delta perlu dikonfirmasi.")
             end)
         end
     end
 
-    countLabel.Text = "File ditemukan: " .. visible
+    status.Text = "Status: Ready | Files: "
+        .. tostring(#allFiles)
+        .. " | Shown: "
+        .. tostring(displayed)
 end
 
-local busy = false
+--==============================================================
+-- EVENTS
+--==============================================================
 
-scanButton.MouseButton1Click:Connect(function()
-    if busy then
-        return
-    end
-
-    busy = true
-    selectedFile = nil
-    status.Text = "Memindai folder..."
+scanButton.Activated:Connect(function()
+    status.Text = "Scanning files..."
 
     task.spawn(function()
-        local ok, files, err, readable = pcall(scanFiles)
+        local ok, err = pcall(scanFiles)
 
         if not ok then
-            allFiles = {}
-            refreshList()
-            status.Text = "Kesalahan: " .. tostring(files)
-
-        elseif type(files) == "table" then
-            allFiles = files
-            refreshList()
-
-            if #files > 0 then
-                status.Text = "Selesai: " .. #files .. " file ditemukan."
-            elseif (readable or 0) == 0 then
-                status.Text = "Folder tidak bisa dibaca oleh API Delta."
-            else
-                status.Text = "Folder terbaca, file model tidak ditemukan."
-            end
-        else
-            allFiles = {}
-            refreshList()
-            status.Text = err or "Pemindaian gagal."
+            status.Text = "Scan error: " .. tostring(err)
+            warn("[PUNAKAWAN] Scan error:", err)
+            return
         end
 
-        busy = false
-    end)
-end)
-
-search:GetPropertyChangedSignal("Text"):Connect(refreshList)
-
-for name, button in pairs(formatButtons) do
-    button.MouseButton1Click:Connect(function()
-        selectedFormat = name
-
-        for format, tab in pairs(formatButtons) do
-            tab.BackgroundColor3 =
-                format == selectedFormat
-                and Color3.fromRGB(135, 85, 255)
-                or Color3.fromRGB(47, 41, 64)
-        end
-
-        selectedFile = nil
         refreshList()
+
+        if #allFiles == 0 then
+            status.Text = "Files: 0 | Periksa path penyimpanan Delta."
+        end
     end)
-end
-
-cancelButton.MouseButton1Click:Connect(function()
-    selectedFile = nil
-    status.Text = "Pilihan dibatalkan."
 end)
 
-importButton.MouseButton1Click:Connect(function()
-    if not selectedFile then
-        status.Text = "Pilih file terlebih dahulu."
-        return
+searchBox:GetPropertyChangedSignal("Text"):Connect(refreshList)
+
+minimizeButton.Activated:Connect(function()
+    main.Visible = false
+end)
+
+closeButton.Activated:Connect(function()
+    gui:Destroy()
+end)
+
+-- Floating reopen button
+local reopenButton = create("TextButton", {
+    Name = "ReopenButton",
+    Position = UDim2.new(0, 20, 0.5, -25),
+    Size = UDim2.fromOffset(50, 50),
+    Text = "PC",
+    TextSize = 13,
+    Font = Enum.Font.GothamBold,
+    TextColor3 = Color3.new(1, 1, 1),
+    BackgroundColor3 = Color3.fromRGB(83, 64, 120),
+    BorderSizePixel = 0,
+    Visible = false
+}, gui)
+corner(reopenButton, 25)
+
+minimizeButton.Activated:Connect(function()
+    main.Visible = false
+    reopenButton.Visible = true
+end)
+
+reopenButton.Activated:Connect(function()
+    main.Visible = true
+    reopenButton.Visible = false
+end)
+
+-- Initial scan
+task.delay(1, function()
+    if gui.Parent then
+        scanButton:Activate()
     end
-
-    status.Text =
-        "File dipilih: " .. getFileName(selectedFile)
-        .. ". Import membutuhkan mekanisme yang didukung Delta/Studio."
 end)
 
-print("[PUNAKAWAN] listfiles:", type(listfilesFn))
-print("[PUNAKAWAN] isfolder:", type(isfolderFn))
-
-if not listfilesFn then
-    status.Text = "API file tidak tersedia. Scanner tidak dapat berjalan."
-end
+print("[PUNAKAWAN] Community Importer GUI loaded.")
