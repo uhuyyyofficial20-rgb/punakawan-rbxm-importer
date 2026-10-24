@@ -1,8 +1,8 @@
---========================================================
+--============================================================
 -- PUNAKAWAN COMMUNITY IMPORTER
--- Version: 2.0
--- Format: RBXM / RBXMX
---========================================================
+-- RBXM / RBXMX
+-- GUI + File Scanner + Bottom Right Notification
+--============================================================
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -11,9 +11,37 @@ local TweenService = game:GetService("TweenService")
 local Player = Players.LocalPlayer
 local PlayerGui = Player:WaitForChild("PlayerGui")
 
---========================================================
--- EXECUTOR API
---========================================================
+--============================================================
+-- CONFIG
+--============================================================
+
+local CONFIG = {
+    Title = "PUNAKAWAN COMMUNITY",
+    Version = "3.0",
+
+    Background = Color3.fromRGB(24, 20, 36),
+    Panel = Color3.fromRGB(37, 30, 53),
+    Purple = Color3.fromRGB(133, 75, 220),
+    LightPurple = Color3.fromRGB(191, 145, 255),
+    Text = Color3.fromRGB(245, 240, 255),
+    Muted = Color3.fromRGB(170, 158, 190),
+
+    MaxDepth = 6,
+
+    Roots = {
+        "Delta/Workspace",
+        "Delta\\Workspace",
+        "Delta/Workspace/",
+        "Delta\\Workspace\\",
+        "Workspace",
+        "workspace",
+        "Delta",
+    },
+}
+
+--============================================================
+-- EXECUTOR API LOOKUP
+--============================================================
 
 local function getAPI(name)
     local environments = {}
@@ -35,8 +63,11 @@ local function getAPI(name)
 
     for _, environment in ipairs(environments) do
         if type(environment) == "table" then
-            local value = rawget(environment, name)
-            if value ~= nil then
+            local ok, value = pcall(function()
+                return environment[name]
+            end)
+
+            if ok and value ~= nil then
                 return value
             end
         end
@@ -47,59 +78,50 @@ end
 
 local listfilesAPI = getAPI("listfiles")
 local readfileAPI = getAPI("readfile")
+local isfileAPI = getAPI("isfile")
 local isfolderAPI = getAPI("isfolder")
 local getobjectsAPI = getAPI("getobjects")
 
---========================================================
--- CONFIGURATION
---========================================================
+--============================================================
+-- HELPERS
+--============================================================
 
-local CONFIG = {
-    Title = "PUNAKAWAN COMMUNITY",
-    Version = "2.0",
-    Background = Color3.fromRGB(24, 20, 36),
-    Panel = Color3.fromRGB(37, 30, 53),
-    Purple = Color3.fromRGB(133, 75, 220),
-    LightPurple = Color3.fromRGB(191, 145, 255),
-    Text = Color3.fromRGB(245, 240, 255),
-    Muted = Color3.fromRGB(170, 158, 190),
+local function create(className, properties, parent)
+    local object = Instance.new(className)
 
-    Roots = {
-        "Delta/Workspace",
-        "Delta\\Workspace",
-        "Workspace",
-        "workspace",
-        "Delta",
-    },
+    for property, value in pairs(properties or {}) do
+        pcall(function()
+            object[property] = value
+        end)
+    end
 
-    MaxDepth = 5,
-}
-
---========================================================
--- FILE SCANNER
---========================================================
-
-local files = {}
-local selectedFile = nil
-local filter = "ALL"
-local searchQuery = ""
+    object.Parent = parent
+    return object
+end
 
 local function normalize(path)
     return tostring(path):gsub("\\", "/")
 end
 
-local function supported(path)
+local function isSupported(path)
     local lower = string.lower(tostring(path))
+
     return lower:match("%.rbxm$") ~= nil
         or lower:match("%.rbxmx$") ~= nil
 end
 
+--============================================================
+-- SCANNER
+--============================================================
+
 local function scanFiles()
     local results = {}
     local seen = {}
+    local errors = {}
 
     if type(listfilesAPI) ~= "function" then
-        return results, "API listfiles() tidak tersedia."
+        return results,
+            "API listfiles() tidak ditemukan pada lingkungan ini."
     end
 
     local function add(path)
@@ -109,68 +131,94 @@ local function scanFiles()
 
         path = normalize(path)
 
-        if supported(path) then
-            local key = string.lower(path)
+        if not isSupported(path) then
+            return
+        end
 
-            if not seen[key] then
-                seen[key] = true
-                table.insert(results, path)
+        local key = string.lower(path)
+
+        if seen[key] then
+            return
+        end
+
+        if type(isfileAPI) == "function" then
+            local ok, exists = pcall(isfileAPI, path)
+
+            if ok and not exists then
+                -- Coba versi path asli jika normalisasi berbeda.
+                local originalOK, originalExists =
+                    pcall(isfileAPI, path:gsub("/", "\\"))
+
+                if originalOK and not originalExists then
+                    return
+                end
             end
         end
+
+        seen[key] = true
+        table.insert(results, path)
     end
 
-    local scanDirectory
+    local visitedFolders = {}
 
-    scanDirectory = function(directory, depth)
+    local function scanDirectory(directory, depth)
         if depth > CONFIG.MaxDepth then
             return
         end
 
-        local ok, entries = pcall(listfilesAPI, directory)
+        local normalizedDirectory = normalize(directory)
+        local directoryKey = string.lower(normalizedDirectory)
 
-        if not ok or type(entries) ~= "table" then
+        if visitedFolders[directoryKey] then
             return
         end
 
-        for _, path in ipairs(entries) do
-            if type(path) == "string" then
-                if supported(path) then
-                    add(path)
+        visitedFolders[directoryKey] = true
+
+        local ok, entries = pcall(listfilesAPI, directory)
+
+        if not ok or type(entries) ~= "table" then
+            table.insert(errors, tostring(directory) .. ": " .. tostring(entries))
+            return
+        end
+
+        for _, entry in ipairs(entries) do
+            if type(entry) == "string" then
+                if isSupported(entry) then
+                    add(entry)
                 elseif type(isfolderAPI) == "function" then
                     local folderOK, isFolder =
-                        pcall(isfolderAPI, path)
+                        pcall(isfolderAPI, entry)
 
                     if folderOK and isFolder then
-                        scanDirectory(path, depth + 1)
+                        scanDirectory(entry, depth + 1)
                     end
                 end
             end
         end
     end
 
-    -- Scan root jika executor mendukung listfiles() tanpa argumen.
-    pcall(function()
-        local entries = listfilesAPI()
+    -- Metode 1: listfiles() tanpa argumen.
+    local rootOK, rootEntries = pcall(listfilesAPI)
 
-        if type(entries) == "table" then
-            for _, path in ipairs(entries) do
-                if type(path) == "string" then
-                    if supported(path) then
-                        add(path)
-                    elseif type(isfolderAPI) == "function" then
-                        local ok, isFolder =
-                            pcall(isfolderAPI, path)
+    if rootOK and type(rootEntries) == "table" then
+        for _, entry in ipairs(rootEntries) do
+            if type(entry) == "string" then
+                if isSupported(entry) then
+                    add(entry)
+                elseif type(isfolderAPI) == "function" then
+                    local folderOK, isFolder =
+                        pcall(isfolderAPI, entry)
 
-                        if ok and isFolder then
-                            scanDirectory(path, 0)
-                        end
+                    if folderOK and isFolder then
+                        scanDirectory(entry, 0)
                     end
                 end
             end
         end
-    end)
+    end
 
-    -- Scan folder umum yang digunakan executor.
+    -- Metode 2: direktori umum.
     for _, root in ipairs(CONFIG.Roots) do
         scanDirectory(root, 0)
     end
@@ -179,23 +227,22 @@ local function scanFiles()
         return string.lower(a) < string.lower(b)
     end)
 
+    if #results == 0 then
+        if #errors > 0 then
+            return results,
+                "Tidak ada file yang ditemukan. Jalur folder tidak dapat dibaca."
+        end
+
+        return results,
+            "Tidak ditemukan file RBXM/RBXMX pada direktori yang diperiksa."
+    end
+
     return results
 end
 
---========================================================
--- GUI HELPERS
---========================================================
-
-local function create(className, properties, parent)
-    local object = Instance.new(className)
-
-    for property, value in pairs(properties or {}) do
-        object[property] = value
-    end
-
-    object.Parent = parent
-    return object
-end
+--============================================================
+-- GUI SETUP
+--============================================================
 
 local oldGui = PlayerGui:FindFirstChild("PunakawanImporter")
 
@@ -210,48 +257,50 @@ local gui = create("ScreenGui", {
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, PlayerGui)
 
---========================================================
--- POP-UP NOTIFICATION
---========================================================
+--============================================================
+-- NOTIFICATION - BOTTOM RIGHT
+--============================================================
 
 local notification = create("Frame", {
     Name = "Notification",
-    Size = UDim2.new(0, 280, 0, 65),
-    Position = UDim2.new(0.5, -140, 0, -85),
+    Size = UDim2.new(0, 260, 0, 60),
+    Position = UDim2.new(1, -275, 1, 80),
     BackgroundColor3 = CONFIG.Panel,
+    BackgroundTransparency = 0.18,
     BorderSizePixel = 0,
     Visible = false,
     ZIndex = 20,
 }, gui)
 
 create("UICorner", {
-    CornerRadius = UDim.new(0, 12),
+    CornerRadius = UDim.new(0, 10),
 }, notification)
 
 create("UIStroke", {
     Color = CONFIG.Purple,
-    Thickness = 1.5,
+    Thickness = 1.2,
+    Transparency = 0.2,
 }, notification)
 
-local notificationTitle = create("TextLabel", {
-    Size = UDim2.new(1, -20, 0, 23),
-    Position = UDim2.new(0, 10, 0, 6),
+create("TextLabel", {
+    Size = UDim2.new(1, -16, 0, 20),
+    Position = UDim2.new(0, 8, 0, 5),
     BackgroundTransparency = 1,
     Text = "PUNAKAWAN IMPORTER",
     TextColor3 = CONFIG.LightPurple,
-    TextSize = 12,
+    TextSize = 11,
     Font = Enum.Font.GothamBold,
     TextXAlignment = Enum.TextXAlignment.Left,
     ZIndex = 21,
 }, notification)
 
 local notificationText = create("TextLabel", {
-    Size = UDim2.new(1, -20, 0, 29),
-    Position = UDim2.new(0, 10, 0, 29),
+    Size = UDim2.new(1, -16, 0, 29),
+    Position = UDim2.new(0, 8, 0, 26),
     BackgroundTransparency = 1,
     Text = "",
     TextColor3 = CONFIG.Text,
-    TextSize = 11,
+    TextSize = 10,
     Font = Enum.Font.Gotham,
     TextWrapped = true,
     TextXAlignment = Enum.TextXAlignment.Left,
@@ -265,13 +314,13 @@ local function popup(message, duration)
     local currentId = notificationId
 
     notificationText.Text = tostring(message)
-    notification.Position = UDim2.new(0.5, -140, 0, -85)
+    notification.Position = UDim2.new(1, -275, 1, 80)
     notification.Visible = true
 
     TweenService:Create(
         notification,
         TweenInfo.new(0.25),
-        {Position = UDim2.new(0.5, -140, 0, 18)}
+        {Position = UDim2.new(1, -275, 1, -75)}
     ):Play()
 
     task.delay(duration or 3, function()
@@ -282,7 +331,7 @@ local function popup(message, duration)
         local tween = TweenService:Create(
             notification,
             TweenInfo.new(0.25),
-            {Position = UDim2.new(0.5, -140, 0, -85)}
+            {Position = UDim2.new(1, -275, 1, 80)}
         )
 
         tween:Play()
@@ -294,20 +343,19 @@ local function popup(message, duration)
     end)
 end
 
---========================================================
--- CIRCULAR FLOATING BUTTON
---========================================================
+--============================================================
+-- CIRCULAR OPEN BUTTON
+--============================================================
 
 local floatingButton = create("TextButton", {
     Name = "OpenImporter",
     Size = UDim2.new(0, 54, 0, 54),
     Position = UDim2.new(0, 18, 0.5, -27),
     BackgroundColor3 = CONFIG.Purple,
-    Text = "P",
+    Text = ">>>",
     TextColor3 = Color3.new(1, 1, 1),
     TextSize = 24,
     Font = Enum.Font.GothamBlack,
-    AutoButtonColor = true,
     ZIndex = 10,
 }, gui)
 
@@ -320,9 +368,9 @@ create("UIStroke", {
     Thickness = 2,
 }, floatingButton)
 
---========================================================
+--============================================================
 -- MAIN PANEL
---========================================================
+--============================================================
 
 local main = create("Frame", {
     Name = "MainPanel",
@@ -354,7 +402,6 @@ create("UICorner", {
     CornerRadius = UDim.new(0, 13),
 }, header)
 
--- Cover the lower rounded corners of the header.
 create("Frame", {
     Size = UDim2.new(1, 0, 0, 12),
     Position = UDim2.new(0, 0, 1, -12),
@@ -442,7 +489,7 @@ local filterBar = create("Frame", {
     ZIndex = 3,
 }, main)
 
-local filterLayout = create("UIListLayout", {
+create("UIListLayout", {
     FillDirection = Enum.FillDirection.Horizontal,
     Padding = UDim.new(0, 6),
     SortOrder = Enum.SortOrder.LayoutOrder,
@@ -517,9 +564,14 @@ create("UICorner", {
     CornerRadius = UDim.new(0, 8),
 }, importButton)
 
---========================================================
--- FILE LIST RENDERING
---========================================================
+--============================================================
+-- LIST RENDERING
+--============================================================
+
+local files = {}
+local selectedFile = nil
+local activeFilter = "ALL"
+local searchText = ""
 
 local function renderFiles()
     for _, child in ipairs(fileList:GetChildren()) do
@@ -535,13 +587,13 @@ local function renderFiles()
         local extension = lower:match("(%.[^./]+)$")
 
         local filterMatch =
-            filter == "ALL"
-            or (filter == "RBXM" and extension == ".rbxm")
-            or (filter == "RBXMX" and extension == ".rbxmx")
+            activeFilter == "ALL"
+            or (activeFilter == "RBXM" and extension == ".rbxm")
+            or (activeFilter == "RBXMX" and extension == ".rbxmx")
 
         local searchMatch =
-            searchQuery == ""
-            or lower:find(string.lower(searchQuery), 1, true) ~= nil
+            searchText == ""
+            or lower:find(string.lower(searchText), 1, true) ~= nil
 
         if filterMatch and searchMatch then
             count = count + 1
@@ -593,11 +645,11 @@ local function renderFiles()
     end)
 end
 
-for _, filterName in ipairs({"ALL", "RBXM", "RBXMX"}) do
+for _, name in ipairs({"ALL", "RBXM", "RBXMX"}) do
     local button = create("TextButton", {
         Size = UDim2.new(0, 90, 0, 27),
         BackgroundColor3 = CONFIG.Panel,
-        Text = filterName,
+        Text = name,
         TextColor3 = CONFIG.Text,
         TextSize = 10,
         Font = Enum.Font.GothamBold,
@@ -609,19 +661,19 @@ for _, filterName in ipairs({"ALL", "RBXM", "RBXMX"}) do
     }, button)
 
     button.Activated:Connect(function()
-        filter = filterName
+        activeFilter = name
         renderFiles()
     end)
 end
 
 searchBox:GetPropertyChangedSignal("Text"):Connect(function()
-    searchQuery = searchBox.Text
+    searchText = searchBox.Text
     renderFiles()
 end)
 
---========================================================
--- SCAN ACTION
---========================================================
+--============================================================
+-- SCAN BUTTON
+--============================================================
 
 scanButton.Activated:Connect(function()
     scanButton.Text = "SCANNING..."
@@ -630,44 +682,44 @@ scanButton.Activated:Connect(function()
     files = result or {}
 
     if selectedFile then
-        local exists = false
+        local stillExists = false
 
         for _, path in ipairs(files) do
             if path == selectedFile then
-                exists = true
+                stillExists = true
                 break
             end
         end
 
-        if not exists then
+        if not stillExists then
             selectedFile = nil
         end
     end
 
     if #files > 0 then
         statusLabel.Text = "Ditemukan " .. #files .. " file."
-        popup("Ditemukan " .. #files .. " file RBXM/RBXMX.")
+        popup("Ditemukan " .. #files .. " file.")
     else
-        statusLabel.Text = err or "File tidak ditemukan."
-        popup(err or "Tidak ada file RBXM/RBXMX yang terdeteksi.")
+        statusLabel.Text = err or "Tidak ada file yang ditemukan."
+        popup(err or "File tidak ditemukan.")
     end
 
     scanButton.Text = "SCAN FILE"
     renderFiles()
 end)
 
---========================================================
--- IMPORT ACTION
---========================================================
+--============================================================
+-- IMPORT BUTTON
+--============================================================
 
 local function importSelected(path)
     if type(readfileAPI) ~= "function" then
         return false, "API readfile() tidak tersedia."
     end
 
-    local okRead, contents = pcall(readfileAPI, path)
+    local readOK, contents = pcall(readfileAPI, path)
 
-    if not okRead or type(contents) ~= "string" then
+    if not readOK or type(contents) ~= "string" then
         return false, "Gagal membaca file lokal."
     end
 
@@ -676,27 +728,25 @@ local function importSelected(path)
     end
 
     if type(getobjectsAPI) ~= "function" then
-        return false,
-            "API getobjects() tidak tersedia. " ..
-            "Diperlukan pemuat RBXM/RBXMX yang kompatibel."
+        return false, "API getobjects() tidak tersedia."
     end
 
-    local okLoad, objects = pcall(getobjectsAPI, path)
+    local loadOK, objects = pcall(getobjectsAPI, path)
 
-    if not okLoad or type(objects) ~= "table" then
+    if not loadOK or type(objects) ~= "table" then
         return false,
-            "File berhasil dibaca, tetapi getobjects() tidak dapat memuatnya."
+            "File terbaca, tetapi getobjects() gagal memuat model lokal."
     end
 
     local imported = 0
 
     for _, object in ipairs(objects) do
         if typeof(object) == "Instance" then
-            local okParent = pcall(function()
+            local ok = pcall(function()
                 object.Parent = workspace
             end)
 
-            if okParent then
+            if ok then
                 imported = imported + 1
             end
         end
@@ -705,10 +755,10 @@ local function importSelected(path)
     if imported == 0 then
         return false,
             "Tidak ada objek hasil pemuatan. " ..
-            "API ini mungkin tidak mendukung jalur file RBXM lokal."
+            "Diperlukan API atau parser RBXM/RBXMX yang kompatibel."
     end
 
-    return true, "Berhasil memasukkan " .. imported .. " objek ke Workspace."
+    return true, "Berhasil mengimpor " .. imported .. " objek."
 end
 
 importButton.Activated:Connect(function()
@@ -726,16 +776,12 @@ importButton.Activated:Connect(function()
     popup(message)
 end)
 
---========================================================
--- OPEN / MINIMIZE / CLOSE
---========================================================
+--============================================================
+-- PANEL CONTROLS
+--============================================================
 
 floatingButton.Activated:Connect(function()
     main.Visible = not main.Visible
-
-    if main.Visible then
-        popup("PUNAKAWAN IMPORTER siap digunakan.")
-    end
 end)
 
 minimizeButton.Activated:Connect(function()
@@ -744,16 +790,15 @@ end)
 
 closeButton.Activated:Connect(function()
     main.Visible = false
-    popup("Panel ditutup. Tekan tombol P untuk membuka kembali.")
 end)
 
---========================================================
+--============================================================
 -- DRAG PANEL
---========================================================
+--============================================================
 
 local dragging = false
-local dragStart = nil
-local startPosition = nil
+local dragStart
+local startPosition
 
 header.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.Touch
@@ -788,9 +833,9 @@ UserInputService.InputEnded:Connect(function(input)
     end
 end)
 
---========================================================
--- INITIALIZE
---========================================================
+--============================================================
+-- START
+--============================================================
 
 renderFiles()
 popup("PUNAKAWAN COMMUNITY IMPORTER aktif.", 3)
