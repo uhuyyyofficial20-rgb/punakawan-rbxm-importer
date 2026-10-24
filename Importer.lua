@@ -1,13 +1,13 @@
 --========================================================--
 --       PUNAKAWAN COMMUNITY IMPORTER
---       Created for PUNAKAWAN COMMUNITY
---       GUI File Browser for Delta
+--       GUI FILE BROWSER FOR DELTA
 --========================================================--
 
 local CONFIG = {
     TITLE = "PUNAKAWAN COMMUNITY",
     SUBTITLE = "RBX FILE IMPORTER",
     FOLDER = "Workspace",
+
     ACCENT = Color3.fromRGB(145, 75, 255),
     BACKGROUND = Color3.fromRGB(20, 20, 28),
     PANEL = Color3.fromRGB(30, 30, 42),
@@ -17,27 +17,27 @@ local CONFIG = {
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
 
 local Player = Players.LocalPlayer
+if not Player then
+    warn("[PUNAKAWAN] LocalPlayer unavailable.")
+    return
+end
+
 local PlayerGui = Player:WaitForChild("PlayerGui")
 
--- Remove previous GUI
+--========================================================--
+-- CLEAN OLD GUI
+--========================================================--
+
 local OldGUI = PlayerGui:FindFirstChild("PunakawanImporter")
 if OldGUI then
     OldGUI:Destroy()
 end
 
 --========================================================--
--- GUI CREATION
+-- GUI HELPERS
 --========================================================--
-
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "PunakawanImporter"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.IgnoreGuiInset = true
-ScreenGui.DisplayOrder = 999
-ScreenGui.Parent = PlayerGui
 
 local function Create(className, properties, parent)
     local object = Instance.new(className)
@@ -64,25 +64,43 @@ local function Stroke(object, color, thickness)
     }, object)
 end
 
+--========================================================--
+-- SCREEN GUI
+--========================================================--
+
+local ScreenGui = Create("ScreenGui", {
+    Name = "PunakawanImporter",
+    ResetOnSpawn = false,
+    IgnoreGuiInset = true,
+    DisplayOrder = 999
+}, PlayerGui)
+
+--========================================================--
+-- MAIN WINDOW
+--========================================================--
+
 local Main = Create("Frame", {
     Name = "Main",
     AnchorPoint = Vector2.new(0.5, 0.5),
     Position = UDim2.new(0.5, 0, 0.5, 0),
-    Size = UDim2.new(0.88, 0, 0, 440),
+    Size = UDim2.new(0.88, 0, 0, 470),
     BackgroundColor3 = CONFIG.BACKGROUND,
     BorderSizePixel = 0,
     ClipsDescendants = true
 }, ScreenGui)
 
 Create("UISizeConstraint", {
-    MinSize = Vector2.new(280, 350),
+    MinSize = Vector2.new(280, 430),
     MaxSize = Vector2.new(500, 520)
 }, Main)
 
 Corner(Main, 14)
 Stroke(Main, CONFIG.ACCENT, 1.5)
 
--- Header
+--========================================================--
+-- HEADER
+--========================================================--
+
 local Header = Create("Frame", {
     Name = "Header",
     Size = UDim2.new(1, 0, 0, 65),
@@ -90,18 +108,18 @@ local Header = Create("Frame", {
     BorderSizePixel = 0
 }, Main)
 
-local Title = Create("TextLabel", {
+Create("TextLabel", {
     Position = UDim2.new(0, 15, 0, 9),
     Size = UDim2.new(1, -115, 0, 23),
     BackgroundTransparency = 1,
     Text = CONFIG.TITLE,
     TextColor3 = CONFIG.TEXT,
-    TextSize = 16,
+    TextSize = 15,
     Font = Enum.Font.GothamBold,
     TextXAlignment = Enum.TextXAlignment.Left
 }, Header)
 
-local Subtitle = Create("TextLabel", {
+Create("TextLabel", {
     Position = UDim2.new(0, 15, 0, 34),
     Size = UDim2.new(1, -115, 0, 17),
     BackgroundTransparency = 1,
@@ -119,8 +137,7 @@ local MinimizeButton = Create("TextButton", {
     Text = "—",
     TextColor3 = CONFIG.TEXT,
     TextSize = 17,
-    Font = Enum.Font.GothamBold,
-    AutoButtonColor = true
+    Font = Enum.Font.GothamBold
 }, Header)
 Corner(MinimizeButton, 8)
 
@@ -131,12 +148,14 @@ local CloseButton = Create("TextButton", {
     Text = "×",
     TextColor3 = CONFIG.TEXT,
     TextSize = 20,
-    Font = Enum.Font.GothamBold,
-    AutoButtonColor = true
+    Font = Enum.Font.GothamBold
 }, Header)
 Corner(CloseButton, 8)
 
--- File format tabs
+--========================================================--
+-- FILE FORMAT TABS
+--========================================================--
+
 local TabHolder = Create("Frame", {
     Position = UDim2.new(0, 12, 0, 77),
     Size = UDim2.new(1, -24, 0, 70),
@@ -160,7 +179,10 @@ local Formats = {
 local CurrentFormat = "RBXM"
 local Tabs = {}
 
--- Search
+--========================================================--
+-- SEARCH BOX
+--========================================================--
+
 local SearchBox = Create("TextBox", {
     Position = UDim2.new(0, 12, 0, 154),
     Size = UDim2.new(1, -24, 0, 36),
@@ -173,12 +195,16 @@ local SearchBox = Create("TextBox", {
     Font = Enum.Font.Gotham,
     ClearTextOnFocus = false
 }, Main)
+
 Corner(SearchBox, 8)
 
--- File list
+--========================================================--
+-- FILE LIST
+--========================================================--
+
 local FileList = Create("ScrollingFrame", {
     Position = UDim2.new(0, 12, 0, 200),
-    Size = UDim2.new(1, -24, 0, 145),
+    Size = UDim2.new(1, -24, 0, 140),
     BackgroundColor3 = CONFIG.PANEL,
     BorderSizePixel = 0,
     ScrollBarThickness = 4,
@@ -186,6 +212,7 @@ local FileList = Create("ScrollingFrame", {
     CanvasSize = UDim2.new(0, 0, 0, 0),
     AutomaticCanvasSize = Enum.AutomaticSize.Y
 }, Main)
+
 Corner(FileList, 8)
 
 Create("UIListLayout", {
@@ -200,8 +227,12 @@ Create("UIPadding", {
     PaddingRight = UDim.new(0, 7)
 }, FileList)
 
+--========================================================--
+-- STATUS
+--========================================================--
+
 local Status = Create("TextLabel", {
-    Position = UDim2.new(0, 14, 0, 352),
+    Position = UDim2.new(0, 14, 0, 345),
     Size = UDim2.new(1, -28, 0, 24),
     BackgroundTransparency = 1,
     Text = "Status: Ready",
@@ -212,13 +243,33 @@ local Status = Create("TextLabel", {
     TextTruncate = Enum.TextTruncate.AtEnd
 }, Main)
 
+local function SetStatus(message)
+    Status.Text = "Status: " .. message
+end
+
+--========================================================--
+-- BUTTONS
+--========================================================--
+
+local ScanButton = Create("TextButton", {
+    Name = "ScanButton",
+    Position = UDim2.new(0, 12, 0, 375),
+    Size = UDim2.new(1, -24, 0, 32),
+    BackgroundColor3 = Color3.fromRGB(50, 50, 70),
+    Text = "SCAN FILE  ↻",
+    TextColor3 = CONFIG.TEXT,
+    TextSize = 12,
+    Font = Enum.Font.GothamBold
+}, Main)
+Corner(ScanButton, 8)
+
 local ImportButton = Create("TextButton", {
     Position = UDim2.new(0, 12, 1, -49),
     Size = UDim2.new(0.58, -10, 0, 36),
     BackgroundColor3 = CONFIG.ACCENT,
     Text = "IMPORT SELECTED",
     TextColor3 = CONFIG.TEXT,
-    TextSize = 12,
+    TextSize = 11,
     Font = Enum.Font.GothamBold
 }, Main)
 Corner(ImportButton, 8)
@@ -234,23 +285,246 @@ local CancelButton = Create("TextButton", {
 }, Main)
 Corner(CancelButton, 8)
 
--- Minimized popup button
+--========================================================--
+-- CIRCULAR POPUP BUTTON
+--========================================================--
+
 local ReopenButton = Create("TextButton", {
     Name = "Reopen",
     AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.new(0.5, 0, 0.8, 0),
-    Size = UDim2.new(0, 165, 0, 42),
+    Position = UDim2.new(0.88, 0, 0.72, 0),
+    Size = UDim2.new(0, 55, 0, 55),
     BackgroundColor3 = CONFIG.ACCENT,
-    Text = "PUNAKAWAN IMPORTER",
+    Text = "PC",
     TextColor3 = CONFIG.TEXT,
-    TextSize = 12,
+    TextSize = 15,
     Font = Enum.Font.GothamBold,
-    Visible = false
+    Visible = false,
+    AutoButtonColor = true
 }, ScreenGui)
-Corner(ReopenButton, 12)
+
+Corner(ReopenButton, 100)
+Stroke(ReopenButton, CONFIG.TEXT, 1)
 
 --========================================================--
--- DRAGGABLE WINDOW
+-- FILE SCANNER
+--========================================================--
+
+local SelectedFile = nil
+local FileButtons = {}
+local ScanGeneration = 0
+
+local function ClearFileList()
+    for _, object in ipairs(FileButtons) do
+        object:Destroy()
+    end
+
+    table.clear(FileButtons)
+    SelectedFile = nil
+end
+
+local function GetFiles()
+    if type(listfiles) ~= "function" then
+        return nil, "Delta API listfiles() unavailable"
+    end
+
+    local files = {}
+    local visited = {}
+    local queue = {CONFIG.FOLDER}
+    local head = 1
+    local maxFolders = 200
+    local scannedFolders = 0
+
+    while head <= #queue and scannedFolders < maxFolders do
+        local folder = queue[head]
+        head += 1
+        scannedFolders += 1
+
+        local ok, result = pcall(function()
+            return listfiles(folder)
+        end)
+
+        if ok and type(result) == "table" then
+            for _, path in ipairs(result) do
+                if type(path) == "string" and not visited[path] then
+                    visited[path] = true
+
+                    local lower = string.lower(path)
+
+                    if lower:match("%.rbxm$")
+                        or lower:match("%.rbxmx$")
+                        or lower:match("%.rbxl$")
+                        or lower:match("%.rbxlx$") then
+
+                        table.insert(files, path)
+                    elseif type(isfolder) == "function" then
+                        local folderOK, isDir = pcall(isfolder, path)
+
+                        if folderOK and isDir then
+                            table.insert(queue, path)
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    table.sort(files)
+    return files
+end
+
+local function RefreshFiles()
+    ScanGeneration += 1
+    local thisScan = ScanGeneration
+
+    ClearFileList()
+    SetStatus("Scanning files...")
+
+    task.spawn(function()
+        local files, err = GetFiles()
+
+        if thisScan ~= ScanGeneration or not ScreenGui.Parent then
+            return
+        end
+
+        if not files then
+            SetStatus(err or "Cannot scan files")
+            return
+        end
+
+        local query = string.lower(SearchBox.Text)
+        local extension = "." .. string.lower(CurrentFormat)
+        local shown = 0
+
+        for _, path in ipairs(files) do
+            local lower = string.lower(path)
+
+            if lower:sub(-#extension) == extension then
+                local name = path:gsub("\\", "/"):match("([^/]+)$") or path
+
+                if query == "" or string.find(string.lower(name), query, 1, true) then
+                    shown += 1
+
+                    local button = Create("TextButton", {
+                        Name = "File_" .. shown,
+                        Size = UDim2.new(1, -4, 0, 34),
+                        BackgroundColor3 = Color3.fromRGB(42, 42, 57),
+                        Text = "  [FILE]  " .. name,
+                        TextColor3 = CONFIG.TEXT,
+                        TextSize = 12,
+                        Font = Enum.Font.Gotham,
+                        TextXAlignment = Enum.TextXAlignment.Left,
+                        TextTruncate = Enum.TextTruncate.AtEnd,
+                        LayoutOrder = shown
+                    }, FileList)
+
+                    Corner(button, 6)
+                    table.insert(FileButtons, button)
+
+                    local selectedPath = path
+
+                    button.Activated:Connect(function()
+                        SelectedFile = selectedPath
+
+                        for _, other in ipairs(FileButtons) do
+                            other.BackgroundColor3 = Color3.fromRGB(42, 42, 57)
+                        end
+
+                        button.BackgroundColor3 = CONFIG.ACCENT
+                        SetStatus("Selected: " .. name)
+                    end)
+                end
+            end
+        end
+
+        if shown == 0 then
+            SetStatus("No " .. CurrentFormat .. " files found")
+        else
+            SetStatus(shown .. " " .. CurrentFormat .. " file(s) found")
+        end
+    end)
+end
+
+--========================================================--
+-- CREATE FORMAT TABS
+--========================================================--
+
+for index, format in ipairs(Formats) do
+    local tab = Create("TextButton", {
+        Name = "Tab_" .. format.Name,
+        BackgroundColor3 = format.Name == CurrentFormat
+            and CONFIG.ACCENT or CONFIG.PANEL,
+        Text = format.Name,
+        TextColor3 = CONFIG.TEXT,
+        TextSize = 12,
+        Font = Enum.Font.GothamBold,
+        LayoutOrder = index
+    }, TabHolder)
+
+    Corner(tab, 7)
+    Tabs[format.Name] = tab
+
+    tab.Activated:Connect(function()
+        CurrentFormat = format.Name
+
+        for name, other in pairs(Tabs) do
+            other.BackgroundColor3 =
+                name == CurrentFormat and CONFIG.ACCENT or CONFIG.PANEL
+        end
+
+        RefreshFiles()
+    end)
+end
+
+--========================================================--
+-- SEARCH AND SCAN
+--========================================================--
+
+SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+    RefreshFiles()
+end)
+
+ScanButton.Activated:Connect(function()
+    ScanButton.Text = "SCANNING..."
+
+    RefreshFiles()
+
+    task.delay(0.5, function()
+        if ScanButton.Parent then
+            ScanButton.Text = "SCAN FILE  ↻"
+        end
+    end)
+end)
+
+--========================================================--
+-- MINIMIZE / REOPEN / CLOSE
+--========================================================--
+
+MinimizeButton.Activated:Connect(function()
+    Main.Visible = false
+    ReopenButton.Visible = true
+end)
+
+ReopenButton.Activated:Connect(function()
+    if not ReopenButton:GetAttribute("Dragging") then
+        ReopenButton.Visible = false
+        Main.Visible = true
+    end
+end)
+
+CloseButton.Activated:Connect(function()
+    ScreenGui:Destroy()
+end)
+
+CancelButton.Activated:Connect(function()
+    SelectedFile = nil
+    SearchBox.Text = ""
+    SetStatus("Selection cancelled")
+    RefreshFiles()
+end)
+
+--========================================================--
+-- DRAG MAIN WINDOW
 --========================================================--
 
 local dragging = false
@@ -291,164 +565,69 @@ UserInputService.InputEnded:Connect(function(input)
 end)
 
 --========================================================--
--- FILE BROWSER
+-- DRAG CIRCULAR POPUP
 --========================================================--
 
-local SelectedFile = nil
-local FileButtons = {}
+local popupDragging = false
+local popupDragStart
+local popupStartPosition
+local popupMoved = false
 
-local function ClearFileList()
-    for _, object in ipairs(FileButtons) do
-        object:Destroy()
+ReopenButton.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Touch
+        or input.UserInputType == Enum.UserInputType.MouseButton1 then
+
+        popupDragging = true
+        popupMoved = false
+        popupDragStart = input.Position
+        popupStartPosition = ReopenButton.Position
+
+        ReopenButton:SetAttribute("Dragging", false)
     end
+end)
 
-    table.clear(FileButtons)
-    SelectedFile = nil
-end
+UserInputService.InputChanged:Connect(function(input)
+    if popupDragging and (
+        input.UserInputType == Enum.UserInputType.Touch
+        or input.UserInputType == Enum.UserInputType.MouseMovement
+    ) then
+        local delta = input.Position - popupDragStart
 
-local function SetStatus(message)
-    Status.Text = "Status: " .. message
-end
+        if math.abs(delta.X) > 8 or math.abs(delta.Y) > 8 then
+            popupMoved = true
+            ReopenButton:SetAttribute("Dragging", true)
+        end
 
-local function GetFiles()
-    local files = {}
-
-    -- Delta/executor-specific file API.
-    if type(listfiles) ~= "function" then
-        return nil, "Executor does not provide listfiles()"
-    end
-
-    local ok, result = pcall(function()
-        return listfiles(CONFIG.FOLDER)
-    end)
-
-    if not ok or type(result) ~= "table" then
-        return nil, "Cannot read Delta/Workspace"
-    end
-
-    for _, path in ipairs(result) do
-        if type(path) == "string" then
-            local lower = string.lower(path)
-            local extension = "." .. string.lower(CurrentFormat)
-
-            if lower:sub(-#extension) == extension then
-                table.insert(files, path)
-            end
+        if popupMoved then
+            ReopenButton.Position = UDim2.new(
+                popupStartPosition.X.Scale,
+                popupStartPosition.X.Offset + delta.X,
+                popupStartPosition.Y.Scale,
+                popupStartPosition.Y.Offset + delta.Y
+            )
         end
     end
+end)
 
-    table.sort(files)
-    return files
-end
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Touch
+        or input.UserInputType == Enum.UserInputType.MouseButton1 then
 
-local function RefreshFiles()
-    ClearFileList()
+        popupDragging = false
 
-    local files, err = GetFiles()
-
-    if not files then
-        SetStatus(err)
-        return
-    end
-
-    local query = string.lower(SearchBox.Text)
-    local shown = 0
-
-    for _, path in ipairs(files) do
-        local name = path:gsub("\\", "/"):match("([^/]+)$") or path
-
-        if query == "" or string.find(string.lower(name), query, 1, true) then
-            shown = shown + 1
-
-            local button = Create("TextButton", {
-                Name = "File_" .. shown,
-                Size = UDim2.new(1, -4, 0, 34),
-                BackgroundColor3 = Color3.fromRGB(42, 42, 57),
-                Text = "  📦  " .. name,
-                TextColor3 = CONFIG.TEXT,
-                TextSize = 12,
-                Font = Enum.Font.Gotham,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                TextTruncate = Enum.TextTruncate.AtEnd,
-                LayoutOrder = shown
-            }, FileList)
-
-            Corner(button, 6)
-            table.insert(FileButtons, button)
-
-            button.Activated:Connect(function()
-                SelectedFile = path
-
-                for _, other in ipairs(FileButtons) do
-                    other.BackgroundColor3 = Color3.fromRGB(42, 42, 57)
+        if popupMoved then
+            task.delay(0.1, function()
+                if ReopenButton.Parent then
+                    ReopenButton:SetAttribute("Dragging", false)
                 end
-
-                button.BackgroundColor3 = CONFIG.ACCENT
-                SetStatus("Selected: " .. name)
             end)
         end
     end
-
-    if shown == 0 then
-        SetStatus("No " .. CurrentFormat .. " files found")
-    else
-        SetStatus(tostring(shown) .. " file(s) found")
-    end
-end
-
-for _, format in ipairs(Formats) do
-    local tab = Create("TextButton", {
-        Name = "Tab_" .. format.Name,
-        BackgroundColor3 = format.Name == CurrentFormat
-            and CONFIG.ACCENT or CONFIG.PANEL,
-        Text = format.Name,
-        TextColor3 = CONFIG.TEXT,
-        TextSize = 12,
-        Font = Enum.Font.GothamBold,
-        LayoutOrder = table.find(Formats, format)
-    }, TabHolder)
-
-    Corner(tab, 7)
-    Tabs[format.Name] = tab
-
-    tab.Activated:Connect(function()
-        CurrentFormat = format.Name
-
-        for name, other in pairs(Tabs) do
-            other.BackgroundColor3 =
-                name == CurrentFormat and CONFIG.ACCENT or CONFIG.PANEL
-        end
-
-        RefreshFiles()
-    end)
-end
-
-SearchBox:GetPropertyChangedSignal("Text"):Connect(RefreshFiles)
+end)
 
 --========================================================--
--- BUTTONS
+-- IMPORT PLACEHOLDER
 --========================================================--
-
-MinimizeButton.Activated:Connect(function()
-    Main.Visible = false
-    ReopenButton.Visible = true
-end)
-
-ReopenButton.Activated:Connect(function()
-    ReopenButton.Visible = false
-    Main.Visible = true
-end)
-
-CloseButton.Activated:Connect(function()
-    ScreenGui:Destroy()
-end)
-
-CancelButton.Activated:Connect(function()
-    SelectedFile = nil
-    SearchBox.Text = ""
-    RefreshFiles()
-    SetStatus("Selection cancelled")
-end)
 
 ImportButton.Activated:Connect(function()
     if not SelectedFile then
@@ -456,12 +635,16 @@ ImportButton.Activated:Connect(function()
         return
     end
 
-    -- Reading a file does NOT import a Roblox model.
-    -- Actual import requires a compatible importer/API.
-    SetStatus("File selected; compatible import engine required")
-    warn("[PUNAKAWAN IMPORTER] Selected:", SelectedFile)
+    SetStatus("Selected; compatible import engine required")
+
+    warn("[PUNAKAWAN IMPORTER] Selected file:", SelectedFile)
+    warn("[PUNAKAWAN IMPORTER] Reading a file does not import it into Studio.")
 end)
+
+--========================================================--
+-- START
+--========================================================--
 
 RefreshFiles()
 
-print("[PUNAKAWAN COMMUNITY IMPORTER] GUI loaded")
+print("[PUNAKAWAN COMMUNITY IMPORTER] GUI loaded successfully.")
