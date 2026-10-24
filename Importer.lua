@@ -1,8 +1,7 @@
 --==================================================
--- PUNAKAWAN RBXM IMPORTER
--- Black & Purple Edition
--- Delta Executor -> Roblox Studio Lite
--- File source: Delta/Workspace/
+-- PUNAKAWAN IMPORTER
+-- BLACK & PURPLE EDITION
+-- GUI + FILE SCANNER + TOGGLE
 --==================================================
 
 if not game:IsLoaded() then
@@ -15,58 +14,121 @@ local UIS = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
--- CONFIGURATION
+local ENV = _G
+
+pcall(function()
+    if type(getgenv) == "function" then
+        ENV = getgenv()
+    end
+end)
+
+local function getFunction(name)
+    local fn
+
+    pcall(function()
+        fn = ENV[name]
+    end)
+
+    if type(fn) == "function" then
+        return fn
+    end
+
+    pcall(function()
+        fn = getfenv()[name]
+    end)
+
+    if type(fn) == "function" then
+        return fn
+    end
+
+    return nil
+end
+
+--==================================================
+-- TOGGLE EXISTING GUI
+--==================================================
+
+local existing = playerGui:FindFirstChild(
+    "PunakawanImporter"
+)
+
+if existing then
+    local main = existing:FindFirstChild("Main")
+    local toggle = existing:FindFirstChild("ToggleButton")
+
+    if main then
+        main.Visible = true
+    end
+
+    if toggle then
+        toggle.Visible = true
+    end
+
+    return
+end
+
+--==================================================
+-- CONFIG
+--==================================================
+
 local CONFIG = {
     Folder = "Delta/Workspace/",
     Title = "PUNAKAWAN IMPORTER",
-    Extensions = {".rbxm", ".rbxmx", ".rbxl", ".rbxlx"},
 }
 
--- REMOVE OLD GUI
-local old = playerGui:FindFirstChild("PunakawanImporter")
-if old then
-    old:Destroy()
-end
-
+--==================================================
 -- COLORS
+--==================================================
+
 local C = {
     Background = Color3.fromRGB(18, 16, 25),
-    Panel = Color3.fromRGB(30, 26, 41),
+    Panel = Color3.fromRGB(31, 27, 42),
     Purple = Color3.fromRGB(145, 70, 255),
     PurpleDark = Color3.fromRGB(83, 42, 135),
     White = Color3.fromRGB(245, 242, 255),
-    Gray = Color3.fromRGB(170, 163, 187),
-    Green = Color3.fromRGB(100, 220, 150),
+    Gray = Color3.fromRGB(175, 165, 190),
+    Green = Color3.fromRGB(100, 230, 155),
     Red = Color3.fromRGB(255, 105, 120),
 }
 
-local function make(className, props, parent)
-    local obj = Instance.new(className)
+--==================================================
+-- GUI HELPERS
+--==================================================
 
-    for key, value in pairs(props) do
-        obj[key] = value
+local function create(className, properties, parent)
+    local object = Instance.new(className)
+
+    for property, value in pairs(properties) do
+        object[property] = value
     end
 
-    obj.Parent = parent
-    return obj
+    object.Parent = parent
+
+    return object
 end
 
-local function corner(obj, radius)
-    make("UICorner", {
+local function addCorner(object, radius)
+    create("UICorner", {
         CornerRadius = UDim.new(0, radius or 8)
-    }, obj)
+    }, object)
 end
 
--- ROOT GUI
-local gui = make("ScreenGui", {
+--==================================================
+-- ROOT
+--==================================================
+
+local gui = create("ScreenGui", {
     Name = "PunakawanImporter",
     ResetOnSpawn = false,
     DisplayOrder = 999,
     ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, playerGui)
 
--- MAIN WINDOW
-local main = make("Frame", {
+--==================================================
+-- MAIN PANEL
+--==================================================
+
+local main = create("Frame", {
     Name = "Main",
     Size = UDim2.fromOffset(340, 440),
     Position = UDim2.new(0.5, -170, 0.5, -220),
@@ -74,33 +136,59 @@ local main = make("Frame", {
     BorderSizePixel = 0,
 }, gui)
 
-corner(main, 14)
+addCorner(main, 15)
 
-make("UIStroke", {
+create("UIStroke", {
     Color = C.Purple,
     Thickness = 1.5,
-    Transparency = 0.15,
 }, main)
 
+--==================================================
+-- FLOATING TOGGLE
+--==================================================
+
+local toggle = create("TextButton", {
+    Name = "ToggleButton",
+    Size = UDim2.fromOffset(54, 54),
+    Position = UDim2.new(0, 18, 0.5, -27),
+    BackgroundColor3 = C.Purple,
+    Text = "P",
+    TextColor3 = C.White,
+    TextSize = 24,
+    Font = Enum.Font.GothamBold,
+    Visible = false,
+}, gui)
+
+addCorner(toggle, 27)
+
+create("UIStroke", {
+    Color = C.White,
+    Thickness = 1,
+    Transparency = 0.5,
+}, toggle)
+
+--==================================================
 -- HEADER
-local header = make("Frame", {
+--==================================================
+
+local header = create("Frame", {
     Name = "Header",
     Size = UDim2.new(1, 0, 0, 66),
     BackgroundColor3 = C.Panel,
     BorderSizePixel = 0,
 }, main)
 
-corner(header, 14)
+addCorner(header, 14)
 
-make("Frame", {
+create("Frame", {
     Size = UDim2.new(1, 0, 0, 14),
     Position = UDim2.new(0, 0, 1, -14),
     BackgroundColor3 = C.Panel,
     BorderSizePixel = 0,
 }, header)
 
-make("TextLabel", {
-    Size = UDim2.new(1, -60, 0, 29),
+create("TextLabel", {
+    Size = UDim2.new(1, -55, 0, 29),
     Position = UDim2.fromOffset(14, 8),
     BackgroundTransparency = 1,
     Text = CONFIG.Title,
@@ -110,8 +198,8 @@ make("TextLabel", {
     TextXAlignment = Enum.TextXAlignment.Left,
 }, header)
 
-make("TextLabel", {
-    Size = UDim2.new(1, -60, 0, 18),
+create("TextLabel", {
+    Size = UDim2.new(1, -55, 0, 18),
     Position = UDim2.fromOffset(14, 37),
     BackgroundTransparency = 1,
     Text = "RBXM / RBXL • MOBILE",
@@ -121,20 +209,24 @@ make("TextLabel", {
     TextXAlignment = Enum.TextXAlignment.Left,
 }, header)
 
-local close = make("TextButton", {
+local minimize = create("TextButton", {
+    Name = "MinimizeButton",
     Size = UDim2.fromOffset(32, 32),
     Position = UDim2.new(1, -42, 0, 16),
     BackgroundColor3 = Color3.fromRGB(100, 42, 65),
-    Text = "X",
+    Text = "—",
     TextColor3 = C.White,
-    TextSize = 14,
+    TextSize = 20,
     Font = Enum.Font.GothamBold,
 }, header)
 
-corner(close)
+addCorner(minimize)
 
--- FILE TYPE
-make("TextLabel", {
+--==================================================
+-- FORMAT SELECTION
+--==================================================
+
+create("TextLabel", {
     Size = UDim2.new(1, -24, 0, 23),
     Position = UDim2.fromOffset(12, 76),
     BackgroundTransparency = 1,
@@ -147,46 +239,66 @@ make("TextLabel", {
 
 local selectedType = "RBXM"
 
-local function typeButton(text, x)
-    return make("TextButton", {
-        Size = UDim2.fromOffset(153, 36),
-        Position = UDim2.fromOffset(x, 101),
-        BackgroundColor3 = C.Panel,
+local function makeButton(name, text, position, size, color)
+    local button = create("TextButton", {
+        Name = name,
+        Size = size,
+        Position = position,
+        BackgroundColor3 = color,
         Text = text,
         TextColor3 = C.White,
         TextSize = 12,
         Font = Enum.Font.GothamBold,
     }, main)
+
+    addCorner(button)
+
+    return button
 end
 
-local modelButton = typeButton("RBXM / RBXMX", 12)
-local placeButton = typeButton("RBXL / RBXLX", 175)
+local modelButton = makeButton(
+    "RBXMButton",
+    "RBXM / RBXMX",
+    UDim2.fromOffset(12, 101),
+    UDim2.fromOffset(153, 36),
+    C.Purple
+)
 
-corner(modelButton)
-corner(placeButton)
+local placeButton = makeButton(
+    "RBXLButton",
+    "RBXL / RBXLX",
+    UDim2.fromOffset(175, 101),
+    UDim2.fromOffset(153, 36),
+    C.Panel
+)
 
-local function setType(value)
-    selectedType = value
+local function selectType(kind)
+    selectedType = kind
 
     modelButton.BackgroundColor3 =
-        value == "RBXM" and C.Purple or C.Panel
+        kind == "RBXM" and C.Purple or C.Panel
 
     placeButton.BackgroundColor3 =
-        value == "RBXL" and C.Purple or C.Panel
+        kind == "RBXL" and C.Purple or C.Panel
 end
 
 modelButton.MouseButton1Click:Connect(function()
-    setType("RBXM")
+    selectType("RBXM")
+    refreshFiles()
 end)
 
 placeButton.MouseButton1Click:Connect(function()
-    setType("RBXL")
+    selectType("RBXL")
+    refreshFiles()
 end)
 
--- FILE LIST TITLE
-make("TextLabel", {
+--==================================================
+-- FILE LIST
+--==================================================
+
+create("TextLabel", {
     Size = UDim2.new(1, -100, 0, 25),
-    Position = UDim2.fromOffset(12, 147),
+    Position = UDim2.fromOffset(12, 145),
     BackgroundTransparency = 1,
     Text = "DAFTAR FILE",
     TextColor3 = C.White,
@@ -195,23 +307,18 @@ make("TextLabel", {
     TextXAlignment = Enum.TextXAlignment.Left,
 }, main)
 
-local refresh = make("TextButton", {
-    Size = UDim2.fromOffset(82, 27),
-    Position = UDim2.new(1, -94, 0, 145),
-    BackgroundColor3 = C.PurpleDark,
-    Text = "REFRESH",
-    TextColor3 = C.White,
-    TextSize = 10,
-    Font = Enum.Font.GothamBold,
-}, main)
+local refreshButton = makeButton(
+    "RefreshButton",
+    "REFRESH",
+    UDim2.new(1, -94, 0, 144),
+    UDim2.fromOffset(82, 27),
+    C.PurpleDark
+)
 
-corner(refresh)
-
--- SCROLLING FILE LIST
-local list = make("ScrollingFrame", {
+local fileList = create("ScrollingFrame", {
     Name = "FileList",
     Size = UDim2.new(1, -24, 0, 150),
-    Position = UDim2.fromOffset(12, 177),
+    Position = UDim2.fromOffset(12, 176),
     BackgroundColor3 = C.Panel,
     BorderSizePixel = 0,
     ScrollBarThickness = 4,
@@ -219,28 +326,33 @@ local list = make("ScrollingFrame", {
     CanvasSize = UDim2.new(0, 0, 0, 0),
 }, main)
 
-corner(list)
+addCorner(fileList)
 
-local listLayout = make("UIListLayout", {
+local layout = create("UIListLayout", {
     Padding = UDim.new(0, 5),
     SortOrder = Enum.SortOrder.LayoutOrder,
-}, list)
+}, fileList)
 
-make("UIPadding", {
+create("UIPadding", {
     PaddingTop = UDim.new(0, 7),
     PaddingBottom = UDim.new(0, 7),
     PaddingLeft = UDim.new(0, 7),
     PaddingRight = UDim.new(0, 7),
-}, list)
+}, fileList)
 
-local selectedFile = nil
+local selectedFile
 local fileButtons = {}
 
-local status = make("TextLabel", {
+--==================================================
+-- STATUS
+--==================================================
+
+local status = create("TextLabel", {
+    Name = "Status",
     Size = UDim2.new(1, -24, 0, 34),
-    Position = UDim2.fromOffset(12, 335),
+    Position = UDim2.fromOffset(12, 333),
     BackgroundTransparency = 1,
-    Text = "Status: Menunggu pemeriksaan file.",
+    Text = "Status: Memeriksa filesystem...",
     TextColor3 = C.Gray,
     TextSize = 11,
     Font = Enum.Font.Gotham,
@@ -248,36 +360,16 @@ local status = make("TextLabel", {
     TextXAlignment = Enum.TextXAlignment.Left,
 }, main)
 
-local importButton = make("TextButton", {
-    Size = UDim2.new(1, -24, 0, 40),
-    Position = UDim2.fromOffset(12, 373),
-    BackgroundColor3 = C.Purple,
-    Text = "IMPORT FILE TERPILIH",
-    TextColor3 = C.White,
-    TextSize = 12,
-    Font = Enum.Font.GothamBold,
-}, main)
-
-corner(importButton)
-
 local function setStatus(message, color)
     status.Text = "Status: " .. message
     status.TextColor3 = color or C.Gray
 end
 
-local function getFunction(name)
-    local ok, fn = pcall(function()
-        return getfenv()[name]
-    end)
+--==================================================
+-- FILE SCANNER
+--==================================================
 
-    if ok and type(fn) == "function" then
-        return fn
-    end
-
-    return nil
-end
-
-local function clearList()
+local function clearFileList()
     for _, button in ipairs(fileButtons) do
         button:Destroy()
     end
@@ -286,56 +378,72 @@ local function clearList()
     selectedFile = nil
 end
 
-local function refreshFiles()
-    clearList()
+local function matchesFormat(path)
+    local name = path:lower()
+
+    if selectedType == "RBXM" then
+        return name:match("%.rbxm$") ~= nil
+            or name:match("%.rbxmx$") ~= nil
+    end
+
+    return name:match("%.rbxl$") ~= nil
+        or name:match("%.rbxlx$") ~= nil
+end
+
+function refreshFiles()
+    clearFileList()
 
     local listfilesFn = getFunction("listfiles")
     local isfileFn = getFunction("isfile")
 
     if not listfilesFn then
-        setStatus("Executor tidak menyediakan listfiles().", C.Red)
+        setStatus(
+            "Fungsi listfiles tidak tersedia di executor.",
+            C.Red
+        )
         return
     end
 
-    local ok, files = pcall(function()
+    local ok, result = pcall(function()
         return listfilesFn(CONFIG.Folder)
     end)
 
-    if not ok or type(files) ~= "table" then
-        setStatus("Folder tidak dapat dibaca: " .. CONFIG.Folder, C.Red)
+    if not ok then
+        setStatus(
+            "Gagal membaca " .. CONFIG.Folder ..
+            " (" .. tostring(result) .. ")",
+            C.Red
+        )
+        return
+    end
+
+    if type(result) ~= "table" then
+        setStatus("Hasil listfiles bukan tabel.", C.Red)
         return
     end
 
     local count = 0
 
-    for _, path in ipairs(files) do
-        if type(path) == "string" then
-            local lower = path:lower()
-            local supported = false
-
-            if selectedType == "RBXM" then
-                supported =
-                    lower:sub(-5) == ".rbxm"
-                    or lower:sub(-6) == ".rbxmx"
-            else
-                supported =
-                    lower:sub(-5) == ".rbxl"
-                    or lower:sub(-6) == ".rbxlx"
-            end
-
+    for _, path in ipairs(result) do
+        if type(path) == "string" and matchesFormat(path) then
             local valid = true
 
             if isfileFn then
-                local checkOk, result = pcall(isfileFn, path)
-                valid = checkOk and result == true
+                local checkOK, isValid = pcall(
+                    isfileFn,
+                    path
+                )
+
+                valid = checkOK and isValid == true
             end
 
-            if supported and valid then
+            if valid then
                 count += 1
 
-                local name = path:match("([^/\\]+)$") or path
+                local name =
+                    path:match("([^/\\]+)$") or path
 
-                local button = make("TextButton", {
+                local button = create("TextButton", {
                     Name = "File_" .. count,
                     Size = UDim2.new(1, -4, 0, 34),
                     BackgroundColor3 = C.Background,
@@ -345,9 +453,9 @@ local function refreshFiles()
                     Font = Enum.Font.Gotham,
                     TextXAlignment = Enum.TextXAlignment.Left,
                     LayoutOrder = count,
-                }, list)
+                }, fileList)
 
-                corner(button)
+                addCorner(button)
 
                 table.insert(fileButtons, button)
 
@@ -359,24 +467,50 @@ local function refreshFiles()
                     end
 
                     button.BackgroundColor3 = C.PurpleDark
-                    setStatus("Dipilih: " .. name, C.Green)
+
+                    setStatus(
+                        "File dipilih: " .. name,
+                        C.Green
+                    )
                 end)
             end
         end
     end
 
-    list.CanvasSize = UDim2.new(
-        0, 0, 0, listLayout.AbsoluteContentSize.Y + 15
+    fileList.CanvasSize = UDim2.new(
+        0,
+        0,
+        0,
+        layout.AbsoluteContentSize.Y + 15
     )
 
     if count == 0 then
-        setStatus("Tidak ada file " .. selectedType .. " yang ditemukan.", C.Gray)
+        setStatus(
+            "Tidak ada file " .. selectedType ..
+            ". Folder: " .. CONFIG.Folder,
+            C.Gray
+        )
     else
-        setStatus(tostring(count) .. " file ditemukan.", C.Green)
+        setStatus(
+            tostring(count) .. " file ditemukan.",
+            C.Green
+        )
     end
 end
 
-refresh.MouseButton1Click:Connect(refreshFiles)
+refreshButton.MouseButton1Click:Connect(refreshFiles)
+
+--==================================================
+-- IMPORT BUTTON
+--==================================================
+
+local importButton = makeButton(
+    "ImportButton",
+    "IMPORT FILE TERPILIH",
+    UDim2.fromOffset(12, 373),
+    UDim2.new(1, -24, 0, 40),
+    C.Purple
+)
 
 importButton.MouseButton1Click:Connect(function()
     if not selectedFile then
@@ -387,7 +521,10 @@ importButton.MouseButton1Click:Connect(function()
     local readfileFn = getFunction("readfile")
 
     if not readfileFn then
-        setStatus("Executor tidak menyediakan readfile().", C.Red)
+        setStatus(
+            "Fungsi readfile tidak tersedia.",
+            C.Red
+        )
         return
     end
 
@@ -396,11 +533,78 @@ importButton.MouseButton1Click:Connect(function()
     end)
 
     if not ok or type(data) ~= "string" then
-        setStatus("File tidak dapat dibaca.", C.Red)
+        setStatus("File gagal dibaca.", C.Red)
         return
     end
 
-    -- File contents are read, but no RBXM/RBXL parser
+    setStatus(
+        "File terbaca (" .. #data ..
+        " byte). Parser impor belum tersedia.",
+        C.Gray
+    )
+end)
+
+--==================================================
+-- MINIMIZE / RESTORE
+--==================================================
+
+minimize.MouseButton1Click:Connect(function()
+    main.Visible = false
+    toggle.Visible = true
+end)
+
+toggle.MouseButton1Click:Connect(function()
+    main.Visible = true
+    toggle.Visible = false
+end)
+
+--==================================================
+-- DRAG WINDOW
+--==================================================
+
+local dragging = false
+local dragStart
+local startPosition
+
+header.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Touch
+        or input.UserInputType == Enum.UserInputType.MouseButton1 then
+
+        dragging = true
+        dragStart = input.Position
+        startPosition = main.Position
+    end
+end)
+
+UIS.InputChanged:Connect(function(input)
+    if dragging and (
+        input.UserInputType == Enum.UserInputType.Touch
+        or input.UserInputType == Enum.UserInputType.MouseMovement
+    ) then
+        local delta = input.Position - dragStart
+
+        main.Position = UDim2.new(
+            startPosition.X.Scale,
+            startPosition.X.Offset + delta.X,
+            startPosition.Y.Scale,
+            startPosition.Y.Offset + delta.Y
+        )
+    end
+end)
+
+UIS.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Touch
+        or input.UserInputType == Enum.UserInputType.MouseButton1 then
+
+        dragging = false
+    end
+end)
+
+--==================================================
+-- INITIALIZE
+--==================================================
+
+refreshFiles()RBXM/RBXL parser
     -- is included in this GUI.
     setStatus(
         "File terbaca (" .. #data ..
