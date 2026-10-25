@@ -1,5 +1,5 @@
 --==============================================================
--- PUNAKAWAN COMMUNITY IMPORTER v5.5 (FIXED RS & SOURCE INJECTION)
+-- PUNAKAWAN COMMUNITY IMPORTER v5.6 (IN-MEMORY & PURE SCRIPT)
 --==============================================================
 
 local Players = game:GetService("Players")
@@ -19,8 +19,6 @@ local STACK_ON_PREVIOUS = false
 local ROOT_PATHS = { "", ".", "workspace", "Workspace" }
 local MAX_DEPTH = 20
 local RUN_SCRIPTS_DEFAULT = true
-local EXPORT_SCRIPT_FILES = true
-local SCRIPT_EXPORT_FOLDER = "PunawakanScripts"
 
 local API_HOSTS = { "apis.roblox.com", "apis.roproxy.com" }
 local THUMB_HOSTS = { "thumbnails.roblox.com", "thumbnails.roproxy.com" }
@@ -57,8 +55,6 @@ local isfolderAPI = getAPI("isfolder")
 local getcustomassetAPI = getAPI("getcustomasset") or getAPI("getsynasset")
 local gethuiAPI = getAPI("gethui")
 local readfileAPI = getAPI("readfile")
-local writefileAPI = getAPI("writefile")
-local makefolderAPI = getAPI("makefolder")
 local setscriptsourceAPI = getAPI("setscriptsource")
 local sethiddenpropertyAPI = getAPI("sethiddenproperty")
 local requestAPI = getAPI("request") or getAPI("http_request")
@@ -580,7 +576,7 @@ local function placeAtSpawn(model)
     model:PivotTo(model:GetPivot() + d)
 end
 
---======================= IMPORT OBJECTS (PATCHED RS) ==========
+--======================= IMPORT OBJECTS =======================
 local SERVICE_NAMES = {
     Lighting = true, ServerScriptService = true, ServerStorage = true, ReplicatedStorage = true, ReplicatedFirst = true,
     StarterGui = true, StarterPack = true, StarterPlayer = true, SoundService = true, Teams = true, Chat = true, TextChatService = true, MaterialService = true,
@@ -604,46 +600,13 @@ local function collectImportables(objects, report)
                     if s.ClassName == "Workspace" then
                         for _, c in ipairs(s:GetChildren()) do list[#list + 1] = c end
                     elseif s.ClassName == "ReplicatedStorage" then
-                        -- SOLUSI INFINITE YIELD: Salin isi ReplicatedStorage langsung ke game
-                        local realRS = game:GetService("ReplicatedStorage")
-                        for _, child in ipairs(s:GetChildren()) do
-                            pcall(function() 
-                                local clone = child:Clone()
-                                clone.Parent = realRS 
-                            end)
-                        end
                         list[#list + 1] = s 
                     elseif s.ClassName == "Lighting" then
-                        local realLight = game:GetService("Lighting")
-                        for _, child in ipairs(s:GetChildren()) do
-                            pcall(function() 
-                                local clone = child:Clone()
-                                clone.Parent = realLight 
-                            end)
-                        end
                         list[#list + 1] = s
                     else mergeIntoLocalService(s, report) end
                 end
             elseif obj.ClassName == "Workspace" then
                 for _, c in ipairs(obj:GetChildren()) do list[#list + 1] = c end
-            elseif obj.ClassName == "ReplicatedStorage" then
-                local realRS = game:GetService("ReplicatedStorage")
-                for _, child in ipairs(obj:GetChildren()) do
-                    pcall(function() 
-                        local clone = child:Clone()
-                        clone.Parent = realRS 
-                    end)
-                end
-                list[#list + 1] = obj
-            elseif obj.ClassName == "Lighting" then
-                local realLight = game:GetService("Lighting")
-                for _, child in ipairs(obj:GetChildren()) do
-                    pcall(function() 
-                        local clone = child:Clone()
-                        clone.Parent = realLight 
-                    end)
-                end
-                list[#list + 1] = obj
             elseif SERVICE_NAMES[obj.ClassName] then mergeIntoLocalService(obj, report)
             else list[#list + 1] = obj end
         end
@@ -982,33 +945,29 @@ ToolboxSearch.FocusLost:Connect(function(enter) if enter then runToolboxSearch(f
 local toolboxOpened = false
 tabButtons.toolbox.Activated:Connect(function() if not toolboxOpened then toolboxOpened = true; runToolboxSearch(false) end end)
 
---======================= SCRIPT RECOVERY (PURE SOURCE) ========
+--======================= SCRIPT RECOVERY (IN-MEMORY) ==========
 local ScriptClasses = { Script = true, LocalScript = true, ModuleScript = true }
 local ScriptRegistry = setmetatable({}, { __mode = "k" })
 local moduleCache = setmetatable({}, { __mode = "k" })
 local okEnv, BASE_ENV = pcall(function() return getfenv() end)
 if not okEnv or type(BASE_ENV) ~= "table" then BASE_ENV = _G end
 
-local function sanitizeName(s) local c = tostring(s):gsub("[^%w%._%- ]", "_"); if c == "" then c = "_" end; return c end
-
--- MENGUBAH URUTAN: inst.Source didahulukan agar UI Editor menampilkan teks
 local function setScriptSource(inst, source)
     if not source or source == "" then return false end
-    
-    -- 1. Properti Source langsung (Sering berhasil untuk Delta UI)
+    -- Coba paksa masukkan Source langsung ke properti (Prioritas Utama)
     local ok2, err2 = pcall(function() inst.Source = source end)
     if ok2 then
         local checkOk, checkSrc = pcall(function() return inst.Source end)
         if checkOk and checkSrc == source then return true end
     end
 
-    -- 2. API setscriptsource (Untuk menjalankan fungsi)
+    -- API Executor
     if setscriptsourceAPI then
         local ok = pcall(setscriptsourceAPI, inst, source)
         if ok then return true end
     end
     
-    -- 3. sethiddenproperty
+    -- Hidden Property
     if sethiddenpropertyAPI then
         local ok3 = pcall(sethiddenpropertyAPI, inst, "Source", source)
         if ok3 then return true end
@@ -1017,26 +976,8 @@ local function setScriptSource(inst, source)
     return false
 end
 
-local function exportScripts(label, items)
-    if not writefileAPI or #items == 0 then return 0 end
-    local function ensureFolder(p) if makefolderAPI and not folderExists(p) then pcall(makefolderAPI, p) end end
-    local base = SCRIPT_EXPORT_FOLDER .. "/" .. sanitizeName(label); ensureFolder(SCRIPT_EXPORT_FOLDER); ensureFolder(base)
-    local used, count = {}, 0
-    for _, item in ipairs(items) do
-        local segs = {}; for seg in string.gmatch(item.path, "[^/]+") do segs[#segs + 1] = sanitizeName(seg) end
-        if #segs > 0 then
-            local folder = base; for i = 1, #segs - 1 do folder = folder .. "/" .. segs[i]; ensureFolder(folder) end
-            local file = folder .. "/" .. segs[#segs]; local candidate, n = file .. ".lua", 1
-            while used[string.lower(candidate)] do n = n + 1; candidate = file .. "_" .. n .. ".lua" end
-            used[string.lower(candidate)] = true
-            if pcall(writefileAPI, candidate, item.source) then count = count + 1 end
-        end
-    end
-    return count
-end
-
 local function restoreScripts(objects, bytes, label)
-    local stats = { inFile = 0, matched = 0, setOK = 0, exported = 0, list = {}, err = nil, hint = nil }
+    local stats = { inFile = 0, matched = 0, setOK = 0, list = {}, err = nil, hint = nil }
     local okP, r1, r2 = pcall(RbxParser.parse, bytes); local parsed, perr
     if okP then parsed, perr = r1, r2 else perr = tostring(r1) end
     if not parsed then
@@ -1046,16 +987,15 @@ local function restoreScripts(objects, bytes, label)
     end
     stats.inFile = RbxParser.countScripts(parsed)
     if stats.inFile == 0 then return stats end
-    local exportItems = {}
+    
     pcall(RbxParser.match, objects, parsed, function(live, p, path)
         if p.source ~= nil and ScriptClasses[live.ClassName] then
             stats.matched += 1; ScriptRegistry[live] = { source = p.source, path = path }; table.insert(stats.list, live)
             -- SUNTIKKAN SOURCE ASLI
             if setScriptSource(live, p.source) then stats.setOK += 1 end
-            table.insert(exportItems, { path = path, source = p.source })
         end
     end)
-    if EXPORT_SCRIPT_FILES then stats.exported = exportScripts(label, exportItems) end
+    
     return stats
 end
 
@@ -1065,32 +1005,52 @@ local function describeScripts(stats)
     if stats.inFile == 0 then return " | Tidak ada script." end
     local msg = " | Script " .. stats.matched .. "/" .. stats.inFile
     if stats.setOK > 0 then msg = msg .. ", " .. stats.setOK .. " terpasang" end
-    if stats.exported > 0 then msg = msg .. ", " .. stats.exported .. " ke " .. SCRIPT_EXPORT_FOLDER end
-    if stats.setOK < stats.matched then msg = msg .. " | " .. (stats.matched - stats.setOK) .. " setSource GAGAL" end
+    if stats.setOK < stats.matched then msg = msg .. " | " .. (stats.matched - stats.setOK) .. " gagal setSource" end
     return msg
 end
 
--- SCRIPT MURNI (TANPA FAKE ENV, SESUAI PERMINTAAN)
-local function makeEnv(inst)
-    return setmetatable({
-        script = inst,
-        require = function(m)
-            local info = typeof(m) == "Instance" and ScriptRegistry[m] or nil
-            if info and m.ClassName == "ModuleScript" then
-                if moduleCache[m] then return moduleCache[m][1] end
-                local fn, err = loadstring(info.source, "=" .. info.path)
-                if not fn then error(err) end
-                setfenv(fn, makeEnv(m))
-                local result = fn()
-                moduleCache[m] = { result }
-                return result
+-- VIRTUAL ENVIRONMENT (Agar script ReplicatedStorage jalan tanpa Infinite Yield)
+local function makeEnv(inst, importRoot)
+    local customEnv = setmetatable({}, { __index = BASE_ENV })
+    customEnv.math = setmetatable({ clamp = function(n, min, max) return math.max(min, math.min(max, n or 0)) end }, { __index = math })
+    customEnv.tick = tick; customEnv.time = time; customEnv.warn = warn
+    
+    local fakeGame = setmetatable({}, {
+        __index = function(_, key)
+            if key == "GetService" then
+                return function(_, name)
+                    if name == "ReplicatedStorage" and importRoot then
+                        local rs = importRoot:FindFirstChild("ReplicatedStorage")
+                        if rs then return rs end
+                        for _, d in ipairs(importRoot:GetDescendants()) do
+                            if d.Name == "ReplicatedStorage" and d:IsA("Folder") then return d end
+                        end
+                    end
+                    return game:GetService(name)
+                end
             end
-            return require(m)
-        end,
-    }, { __index = BASE_ENV })
+            return game[key]
+        end
+    })
+    customEnv.game = fakeGame; customEnv.script = inst
+    
+    customEnv.require = function(m)
+        local info = typeof(m) == "Instance" and ScriptRegistry[m] or nil
+        if info and m.ClassName == "ModuleScript" then
+            if moduleCache[m] then return moduleCache[m][1] end
+            local fn, err = loadstring(info.source, "=" .. info.path)
+            if fn then
+                setfenv(fn, makeEnv(m, importRoot))
+                local ok, res = pcall(fn)
+                if ok then moduleCache[m] = { res }; return res end
+            end
+        end
+        return require(m)
+    end
+    return customEnv
 end
 
-local function runScripts(list)
+local function runScripts(list, importRoot)
     local started = 0
     for _, inst in ipairs(list) do
         local info = ScriptRegistry[inst]
@@ -1099,11 +1059,11 @@ local function runScripts(list)
             if not disabled then
                 local fn, err = loadstring(info.source, "=" .. info.path)
                 if fn then
-                    setfenv(fn, makeEnv(inst))
+                    setfenv(fn, makeEnv(inst, importRoot))
                     task.spawn(fn)
                     started += 1
                 else
-                    warn("[Punakawan] compile gagal " .. info.path .. ": " .. tostring(err))
+                    warn("[Punawakan] compile gagal " .. info.path .. ": " .. tostring(err))
                 end
             end
         end
@@ -1111,57 +1071,41 @@ local function runScripts(list)
     return started
 end
 
---======================= LOAD FILE / ASSET ====================
+--======================= LOAD FILE (MEMORY BYTES) =============
 local function readFileBytes(resolvedPath)
     if not readfileAPI then return nil end
     local ok, data = pcall(readfileAPI, resolvedPath)
     if ok and type(data) == "string" and #data > 0 then return data end
     return nil
 end
-local function emptyStats(reason) return { inFile = 0, matched = 0, setOK = 0, exported = 0, list = {}, err = reason } end
-
-local function prepareFile(path)
-    local resolved = findFile(path)
-    if not resolved then return nil, "file tidak ditemukan" end
-    local bytes = readFileBytes(resolved)
-    if not bytes then return nil, "gagal baca bytes" end
-    if writefileAPI and makefolderAPI then
-        if not folderExists("PunawakanCache") then pcall(makefolderAPI, "PunawakanCache") end
-        local safeName = "PunawakanCache/f_" .. tostring(math.random(1, 999999)) .. "." .. getExtension(path)
-        if pcall(writefileAPI, safeName, bytes) then return safeName, bytes end
-    end
-    return resolved, bytes
-end
+local function emptyStats(reason) return { inFile = 0, matched = 0, setOK = 0, list = {}, err = reason } end
 
 local function loadFile(path)
-    local safePath, bytesOrErr = prepareFile(path)
-    if not safePath then return nil, bytesOrErr end
-    local bytes = bytesOrErr
+    local resolved = findFile(path)
+    if not resolved then return nil, "file tidak ditemukan" end
+    
+    -- BACA MURNI KE DALAM MEMORI (RAM)
+    local bytes = readFileBytes(resolved)
+    if not bytes then return nil, "gagal baca bytes" end
 
-    local function tryLoad(p)
-        local errs = {}
-        local ok, res = pcall(function() return game:GetObjects(p) end)
-        if ok and type(res) == "table" and #res > 0 then return res end
-        table.insert(errs, "GetObjects(path): " .. tostring(res))
+    local okA, url = pcall(getcustomassetAPI, resolved)
+    if not okA or type(url) ~= "string" or url == "" then return nil, "getcustomasset gagal" end
 
-        if getcustomassetAPI then
-            local okA, url = pcall(getcustomassetAPI, p)
-            if okA and url then
-                local okB, res2 = pcall(function() return game:GetObjects(url) end)
-                if okB and type(res2) == "table" and #res2 > 0 then return res2 end
-                table.insert(errs, "GetObjects(url): " .. tostring(res2))
-            else table.insert(errs, "getcustomasset: " .. tostring(url)) end
+    local objects
+    local ok, result = pcall(function() return game:GetObjects(url) end)
+    if ok and type(result) == "table" and #result > 0 then 
+        objects = result
+    else
+        local err1 = tostring(result)
+        local ok2, single = pcall(function() return InsertService:LoadLocalAsset(url) end)
+        if ok2 and typeof(single) == "Instance" then 
+            objects = { single }
+        else
+            return nil, "GetObjects: " .. err1 .. " | LoadLocalAsset: " .. tostring(single)
         end
-
-        local okC, res3 = pcall(function() return InsertService:LoadLocalAsset(p) end)
-        if okC and typeof(res3) == "Instance" then return {res3} end
-        table.insert(errs, "LoadLocalAsset: " .. tostring(res3))
-        return nil, table.concat(errs, " | ")
     end
 
-    local objects, err = tryLoad(safePath)
-    if not objects then return nil, err end
-    
+    -- EKSTRAK SOURCE DARI BYTES RAM
     local stats = restoreScripts(objects, bytes, baseNameOf(path))
     return objects, nil, stats
 end
@@ -1183,10 +1127,18 @@ end
 
 local function loadToolboxAsset(id)
     local bytes = fetchAssetBytes(id)
-    if bytes and writefileAPI and makefolderAPI then
-        if not folderExists("PunawakanCache") then pcall(makefolderAPI, "PunawakanCache") end
-        local safeName = "PunawakanCache/tb_" .. tostring(id) .. ".rbxm"
-        if pcall(writefileAPI, safeName, bytes) then return loadFile(safeName) end
+    if bytes then
+        local objects
+        local ok, result = pcall(function() return game:GetObjects("rbxassetid://" .. tostring(id)) end)
+        if ok and type(result) == "table" and #result > 0 then objects = result
+        else
+            local err1 = tostring(result)
+            local ok2, m = pcall(function() return InsertService:LoadAsset(id) end)
+            if ok2 and typeof(m) == "Instance" then objects = { m }
+            else return nil, "Gagal muat (GetObjects/LoadAsset): " .. err1 end
+        end
+        local stats = restoreScripts(objects, bytes, "Toolbox_" .. tostring(id))
+        return objects, nil, stats
     end
     
     local objects
@@ -1196,9 +1148,9 @@ local function loadToolboxAsset(id)
         local err1 = tostring(result)
         local ok2, m = pcall(function() return InsertService:LoadAsset(id) end)
         if ok2 and typeof(m) == "Instance" then objects = { m }
-        else return nil, "Gagal muat. (Download: " .. tostring(bytes ~= nil) .. " | GetObjects: " .. err1 .. ")" end
+        else return nil, "Gagal muat. (Download: false | GetObjects: " .. err1 .. ")" end
     end
-    local stats = bytes and restoreScripts(objects, bytes, "Toolbox_" .. tostring(id)) or emptyStats("file model asli tidak bisa diunduh")
+    local stats = emptyStats("file model asli tidak bisa diunduh")
     return objects, nil, stats
 end
 
@@ -1242,7 +1194,7 @@ ModelImport.Activated:Connect(function()
 
             local extra = describeScripts(stats)
             if stats and #stats.list > 0 then
-                if runScriptsEnabled then extra = extra .. " | " .. runScripts(stats.list) .. " dijalankan"
+                if runScriptsEnabled then extra = extra .. " | " .. runScripts(stats.list, container) .. " dijalankan"
                 else extra = extra .. " | RUN OFF" end
             end
             setStatus(msg .. extra)
@@ -1270,7 +1222,7 @@ ToolboxImport.Activated:Connect(function()
 
             local extra = describeScripts(stats)
             if stats and #stats.list > 0 then
-                if runScriptsEnabled then extra = extra .. " | " .. runScripts(stats.list) .. " dijalankan"
+                if runScriptsEnabled then extra = extra .. " | " .. runScripts(stats.list, container) .. " dijalankan"
                 else extra = extra .. " | RUN OFF" end
             end
             setStatus(msg .. extra)
@@ -1291,10 +1243,9 @@ local missing = {}
 if not listfilesAPI then missing[#missing + 1] = "listfiles" end
 if not isfileAPI then missing[#missing + 1] = "isfile" end
 if not getcustomassetAPI then missing[#missing + 1] = "getcustomasset" end
-if not writefileAPI then missing[#missing + 1] = "writefile" end
 if not readfileAPI then missing[#missing + 1] = "readfile" end
 if #missing > 0 then setStatus("API hilang: " .. table.concat(missing, ", ")) else setStatus("Siap. Tekan SCAN FILE.") end
 
 print("======================================")
-print("PUNAKAWAN IMPORTER v5.5 (FIXED RS & SOURCE)")
+print("PUNAKAWAN IMPORTER v5.6 (IN-MEMORY)")
 print("======================================")
