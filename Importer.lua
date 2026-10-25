@@ -1,5 +1,5 @@
 --==============================================================
--- PUNAKAWAN COMMUNITY IMPORTER v5.8 (EDITABLE SCRIPTS + DIAGNOSA)
+-- PUNAKAWAN COMMUNITY IMPORTER v5.9 (EDITABLE SCRIPTS + IDENTITY FIX)
 --==============================================================
 
 local Players = game:GetService("Players")
@@ -59,8 +59,8 @@ local gethuiAPI = getAPI("gethui")
 local readfileAPI = getAPI("readfile")
 local writefileAPI = getAPI("writefile")
 local makefolderAPI = getAPI("makefolder")
-local setscriptsourceAPI = getAPI("setscriptsource")
-local sethiddenpropertyAPI = getAPI("sethiddenproperty")
+local setscriptsourceAPI = getAPI("setscriptsource") or getAPI("set_script_source") or getAPI("setsource")
+local sethiddenpropertyAPI = getAPI("sethiddenproperty") or getAPI("set_hidden_property") or getAPI("set_hidden_prop")
 local requestAPI = getAPI("request") or getAPI("http_request")
 
 --========================= UTIL ===============================
@@ -1392,37 +1392,79 @@ local function sanitizeName(s) local c = tostring(s):gsub("[^%w%._%- ]", "_"); i
 
 -- Tulis source ke instance script. Kosong dianggap sukses (tidak ada yang perlu ditulis).
 -- Hasil tiap metode dicatat di SrcDiag supaya penyebab kegagalan terlihat di status.
-local SrcDiag = { direct = "-", api = "-", hidden = "-" }
+local SrcDiag = { direct = "-", api = "-", hidden = "-", id = "-" }
+-- (helper ditaruh di tabel SrcDiag supaya tidak menambah jumlah variabel local level atas)
+SrcDiag.setId = getAPI("setthreadidentity") or getAPI("set_thread_identity") or getAPI("setidentity")
+    or getAPI("setthreadcontext") or getAPI("set_thread_context")
+SrcDiag.getId = getAPI("getthreadidentity") or getAPI("get_thread_identity") or getAPI("getidentity")
+    or getAPI("getthreadcontext") or getAPI("get_thread_context")
+
+-- Jalankan fn dengan identitas thread dinaikkan (properti Source butuh capability tinggi),
+-- lalu kembalikan identitas semula.
+function SrcDiag.withIdentity(fn)
+    local prev
+    if SrcDiag.getId then local okG, v = pcall(SrcDiag.getId); if okG then prev = v end end
+    if SrcDiag.setId then
+        local okS = pcall(SrcDiag.setId, 8)
+        if not okS then okS = pcall(SrcDiag.setId, 7) end
+        if not okS then okS = pcall(SrcDiag.setId, 2) end
+        SrcDiag.id = okS and "naik" or "gagal naik"
+    else
+        SrcDiag.id = "tidak ada"
+    end
+    local ok, res = pcall(fn)
+    if SrcDiag.setId and prev then pcall(SrcDiag.setId, prev) end
+    if ok then return res end
+    return false
+end
+
+function SrcDiag.readSource(inst)
+    local okR, cur = pcall(function() return inst.Source end)
+    if okR and type(cur) == "string" then return cur end
+    return nil
+end
+
 local function setScriptSource(inst, source)
     if source == nil then return false end
     if source == "" then return true end
-
-    -- 1. properti Source langsung (diverifikasi dengan baca ulang)
-    local ok1, e1 = pcall(function() inst.Source = source end)
-    if ok1 then
-        local okR, cur = pcall(function() return inst.Source end)
-        if okR and cur == source then SrcDiag.direct = "ok"; return true end
-        SrcDiag.direct = "tulis ok tapi baca ulang beda"
-    else
-        SrcDiag.direct = tostring(e1):sub(1, 40)
-    end
-    -- 2. setscriptsource milik executor
-    if setscriptsourceAPI then
-        local ok, e = pcall(setscriptsourceAPI, inst, source)
-        if ok then SrcDiag.api = "ok"; return true end
-        SrcDiag.api = tostring(e):sub(1, 40)
-    else
-        SrcDiag.api = "tidak ada"
-    end
-    -- 3. sethiddenproperty
-    if sethiddenpropertyAPI then
-        local ok, e = pcall(sethiddenpropertyAPI, inst, "Source", source)
-        if ok then SrcDiag.hidden = "ok"; return true end
-        SrcDiag.hidden = tostring(e):sub(1, 40)
-    else
-        SrcDiag.hidden = "tidak ada"
-    end
-    return false
+    return SrcDiag.withIdentity(function()
+        -- 1. properti Source langsung (diverifikasi dengan baca ulang)
+        local ok1, e1 = pcall(function() inst.Source = source end)
+        if ok1 then
+            local cur = SrcDiag.readSource(inst)
+            if cur == source then SrcDiag.direct = "ok"; return true end
+            SrcDiag.direct = "tulis ok tapi baca ulang beda"
+        else
+            SrcDiag.direct = tostring(e1):sub(1, 40)
+        end
+        -- 2. setscriptsource milik executor
+        if setscriptsourceAPI then
+            local ok, e = pcall(setscriptsourceAPI, inst, source)
+            if ok then
+                local cur = SrcDiag.readSource(inst)
+                if cur == nil or cur == source then SrcDiag.api = "ok"; return true end
+                SrcDiag.api = "dipanggil tapi baca ulang beda"
+            else
+                SrcDiag.api = tostring(e):sub(1, 40)
+            end
+        else
+            SrcDiag.api = "tidak ada"
+        end
+        -- 3. sethiddenproperty
+        if sethiddenpropertyAPI then
+            local ok, e = pcall(sethiddenpropertyAPI, inst, "Source", source)
+            if ok then
+                local cur = SrcDiag.readSource(inst)
+                if cur == nil or cur == source then SrcDiag.hidden = "ok"; return true end
+                SrcDiag.hidden = "dipanggil tapi baca ulang beda"
+            else
+                SrcDiag.hidden = tostring(e):sub(1, 40)
+            end
+        else
+            SrcDiag.hidden = "tidak ada"
+        end
+        return false
+    end)
 end
 
 local function exportScripts(label, items)
@@ -1578,7 +1620,7 @@ local function describeScripts(stats)
     if (stats.replaced or 0) > 0 then msg = msg .. ", " .. stats.replaced .. " bisa diedit" end
     if okc < live then
         msg = msg .. " | GAGAL tulis Source ke " .. (live - okc) .. " script (tetap dijalankan). Diagnosa: Source=" .. SrcDiag.direct
-            .. "; setscriptsource=" .. SrcDiag.api .. "; hidden=" .. SrcDiag.hidden
+            .. "; setscriptsource=" .. SrcDiag.api .. "; hidden=" .. SrcDiag.hidden .. "; identity=" .. SrcDiag.id
     end
     return msg
 end
@@ -1762,6 +1804,13 @@ local function finishImport(objects, stats, isPlace, baseName)
         if info and setScriptSource(inst, info.source) then injected = injected + 1 end
     end
     if stats then stats.injected = injected; stats.liveCount = #live end
+    -- tulis ulang sekali lagi setelah engine selesai menaruh objek (beberapa executor menolak saat baru dipasang)
+    task.delay(1.5, function()
+        for _, inst in ipairs(live) do
+            local info = ScriptRegistry[inst]
+            if info and inst.Parent and SrcDiag.readSource(inst) ~= info.source then pcall(setScriptSource, inst, info.source) end
+        end
+    end)
 
     local extra = describeScripts(stats)
     if #runnable > 0 then
@@ -1847,5 +1896,5 @@ if #missing > 0 then setStatus("API hilang: " .. table.concat(missing, ", "))
 else setStatus("Siap. Tekan SCAN FILE. setscriptsource: " .. (setscriptsourceAPI and "ada" or "TIDAK ADA") .. ", decompile: " .. (getAPI("decompile") and "ada" or "TIDAK ADA")) end
 
 print("======================================")
-print("PUNAKAWAN IMPORTER v5.8 (EDITABLE SCRIPTS + DIAGNOSA)")
+print("PUNAKAWAN IMPORTER v5.9 (EDITABLE SCRIPTS + IDENTITY FIX)")
 print("======================================")
