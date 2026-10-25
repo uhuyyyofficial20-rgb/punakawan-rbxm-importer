@@ -1,7 +1,6 @@
 --==============================================================
--- PUNAKAWAN COMMUNITY IMPORTER v5.3
--- FIX: getcustomasset-first file resolution, throttled toolbox
---      thumbnails, better script recovery diagnostics
+-- PUNAKAWAN COMMUNITY IMPORTER v5.4 (STABLE)
+-- Fixes: File caching, Virtual ReplicatedStorage, Toolbox
 --==============================================================
 
 local Players = game:GetService("Players")
@@ -85,7 +84,6 @@ local function trim(s)
     return (tostring(s):gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
--- Variasi path: coba semua kemungkinan yang executor terima
 local function fileVariants(path)
     local p = normalizePath(path)
     local list, seen = {}, {}
@@ -95,104 +93,55 @@ local function fileVariants(path)
             list[#list + 1] = v
         end
     end
-
-    -- 1) as-is
     add(p)
-
-    -- 2) strip leading ./ atau /
     local stripped = p:gsub("^%.?/", "")
     if stripped ~= p then add(stripped) end
-
-    -- 3) strip "workspace/" atau "Workspace/"
     local noWs = stripped:gsub("^[Ww]orkspace/", "")
-    if noWs ~= stripped then
-        add(noWs)
-        add("./" .. noWs)
-    end
-
-    -- 4) strip prefix absolut: cari "/Workspace/" terakhir, ambil suffix
+    if noWs ~= stripped then add(noWs); add("./" .. noWs) end
     local lower = string.lower(p)
     local wsPos = lower:find("/workspace/", 1, true)
     if wsPos then
         local rel = string.sub(p, wsPos + 11)
-        add(rel)
-        add("./" .. rel)
-        add("workspace/" .. rel)
-        add("Workspace/" .. rel)
+        add(rel); add("./" .. rel); add("workspace/" .. rel); add("Workspace/" .. rel)
     end
-
-    -- 5) basename saja
     local base = p:match("([^/\\]+)$")
-    if base and base ~= p then
-        add(base)
-        add("./" .. base)
-    end
-
-    -- 6) tambah "./" dan "workspace/" prefix jika belum ada
+    if base and base ~= p then add(base); add("./" .. base) end
     local count = #list
     for i = 1, count do
         local v = list[i]
         if not v:match("^%.?/") and not v:match("^[Ww]orkspace/") and not v:match("^/") then
-            add("./" .. v)
-            add("workspace/" .. v)
-            add("Workspace/" .. v)
+            add("./" .. v); add("workspace/" .. v); add("Workspace/" .. v)
         end
     end
-
     return list
 end
 
 local fileCache = {}
 
--- FIX KRITIS: prioritaskan getcustomasset untuk verifikasi.
--- Alasan: getcustomasset adalah API yang benar-benar dipakai untuk load.
--- Banyak executor menganggap isfile=true untuk path yang tidak diterima getcustomasset.
 local function findFile(path, silent)
     if type(path) ~= "string" or path == "" then return nil end
-
     local cached = fileCache[path]
     if cached and cached ~= false then return cached end
-
     local variants = fileVariants(path)
-
-    -- 1) PRIORITAS: getcustomasset (yang akan benar-benar dipakai)
     if getcustomassetAPI then
         for _, v in ipairs(variants) do
             local ok, url = pcall(getcustomassetAPI, v)
-            if ok and type(url) == "string" and url ~= "" then
-                fileCache[path] = v
-                return v
-            end
+            if ok and type(url) == "string" and url ~= "" then fileCache[path] = v; return v end
         end
     end
-
-    -- 2) Fallback: isfile
     if isfileAPI then
         for _, v in ipairs(variants) do
             local ok, res = pcall(isfileAPI, v)
-            if ok and res == true then
-                fileCache[path] = v
-                return v
-            end
+            if ok and res == true then fileCache[path] = v; return v end
         end
     end
-
-    -- 3) Fallback: readfile (isi > 0)
     if readfileAPI then
         for _, v in ipairs(variants) do
             local ok, data = pcall(readfileAPI, v)
-            if ok and type(data) == "string" and #data > 0 then
-                fileCache[path] = v
-                return v
-            end
+            if ok and type(data) == "string" and #data > 0 then fileCache[path] = v; return v end
         end
     end
-
     fileCache[path] = false
-    if not silent then
-        warn("[Punakawan] File NOT RESOLVABLE:", path)
-        for i, v in ipairs(variants) do warn(string.format("  [%d] %q", i, v)) end
-    end
     return nil
 end
 
@@ -217,9 +166,7 @@ local function resolveImage(file, assetId)
 end
 
 local logoImage = resolveImage(LOGO_FILE, LOGO_ASSET_ID)
-local bgImage = resolveImage(BG_FILE, BG_ASSET_ID)
-    or resolveImage("punakawan_bg.png", "")
-    or resolveImage("punawakan_bg.png", "")
+local bgImage = resolveImage(BG_FILE, BG_ASSET_ID) or resolveImage("punakawan_bg.png", "")
 
 --========================= PARSER =============================
 local RbxParser
@@ -303,10 +250,7 @@ function RbxParser.parseBinary(data)
             pos = start + unc
         else
             local raw = ssub(data, start, start + comp - 1)
-            -- Deteksi ZSTD
-            if ssub(raw, 1, 4) == "\40\181\47\253" then
-                return nil, "ZSTD_COMPRESSED"
-            end
+            if ssub(raw, 1, 4) == "\40\181\47\253" then return nil, "ZSTD_COMPRESSED" end
             chunk = lz4Decompress(raw)
             pos = start + comp
         end
@@ -1031,13 +975,20 @@ local function collectImportables(objects, report)
                 for _, s in ipairs(obj:GetChildren()) do
                     if s.ClassName == "Workspace" then
                         for _, c in ipairs(s:GetChildren()) do list[#list + 1] = c end
-                    else mergeIntoLocalService(s, report) end
+                    elseif s.ClassName == "ReplicatedStorage" then
+                        -- Simpan ReplicatedStorage ke dalam container lokal
+                        list[#list + 1] = s
+                    else 
+                        mergeIntoLocalService(s, report) 
+                    end
                 end
             elseif obj.ClassName == "Workspace" then
                 for _, c in ipairs(obj:GetChildren()) do list[#list + 1] = c end
             elseif SERVICE_NAMES[obj.ClassName] then
                 mergeIntoLocalService(obj, report)
-            else list[#list + 1] = obj end
+            else 
+                list[#list + 1] = obj 
+            end
         end
     end
     return list
@@ -1072,7 +1023,7 @@ local function importObjects(objects, isPlace, baseName)
         if not ok then placeNote = " | gagal posisi: " .. tostring(err) end
     elseif target then target:Destroy() end
     if placed == 0 and report.services == 0 and report.gui == 0 then
-        return false, "Tidak ada objek."
+        return false, "Tidak ada objek.", nil
     end
     local parts = {}
     if placed > 0 then parts[#parts + 1] = placed .. " objek" end
@@ -1080,7 +1031,7 @@ local function importObjects(objects, isPlace, baseName)
     if report.gui > 0 then parts[#parts + 1] = report.gui .. " GUI" end
     local msg = "BERHASIL: " .. table.concat(parts, ", ") .. "."
     if report.failed > 0 then msg = msg .. " | " .. report.failed .. " ditolak." end
-    return true, msg .. placeNote
+    return true, msg .. placeNote, target
 end
 
 --======================= FILE SCANNER =========================
@@ -1312,8 +1263,6 @@ task.spawn(function()
 end)
 
 --======================= TOOLBOX PAGE =========================
--- FIX LAG: thumbnail download di-queue, satu per satu dengan wait.
--- Gak ada lagi 30 spawn paralel yang blocking.
 local ToolboxPage = newPage("toolbox")
 local ToolboxSearch = makeBox(ToolboxPage, "Cari model atau tempel Asset ID...", UDim2.fromOffset(0, 0), UDim2.new(1, 0, 0, 32))
 local ToolboxGo = makeButton(ToolboxPage, "CARI", UDim2.fromOffset(0, 38), UDim2.new(0.5, -3, 0, 32), true)
@@ -1327,10 +1276,8 @@ local toolboxList = newGrid(ToolboxPage, UDim2.fromOffset(0, 76), UDim2.new(1, 0
 end, function() runToolboxSearch(true) end)
 
 local function httpBody(url)
-    -- HttpGet YIELDS - gunakan untuk download besar agar UI tetap responsif
     local ok, body = pcall(function() return game:HttpGet(url) end)
     if ok and type(body) == "string" and body ~= "" then return body end
-    -- Fallback request (mungkin tidak yielding)
     if requestAPI then
         local ok2, res = pcall(requestAPI, { Url = url, Method = "GET", Headers = { ["Accept"] = "*/*" } })
         if ok2 and type(res) == "table" then
@@ -1389,7 +1336,7 @@ end
 local MODEL_ICON = "rbxassetid://4458901886"
 local THUMB_CACHE = "PunawakanThumbs"
 local thumbnailURLCache = {}
-local thumbURLsBatch = {}  -- cache URL thumbnail dari API per-id
+local thumbURLsBatch = {}
 
 local function ensureThumbFolder()
     if makefolderAPI and not folderExists(THUMB_CACHE) then
@@ -1397,12 +1344,10 @@ local function ensureThumbFolder()
     end
 end
 
--- Resolve 1 thumbnail: cek cache memori -> cache disk -> download baru -> fallback
 local function resolveThumbnail(id, skipHttp)
     id = tonumber(id)
     if not id then return MODEL_ICON end
     if thumbnailURLCache[id] then return thumbnailURLCache[id] end
-
     if writefileAPI and getcustomassetAPI then
         local cachePath = THUMB_CACHE .. "/" .. id .. ".png"
         local resolved = findFile(cachePath, true)
@@ -1434,7 +1379,6 @@ local function resolveThumbnail(id, skipHttp)
     return "rbxthumb://type=Asset&id=" .. tostring(id) .. "&w=150&h=150"
 end
 
--- QUEUE thumbnail: satu per satu dengan wait, tidak ada spawn paralel
 local thumbQueue = {}
 local thumbProcessing = false
 local function enqueueThumb(id, imgLabel)
@@ -1450,7 +1394,7 @@ local function enqueueThumb(id, imgLabel)
                     pcall(function() item.img.Image = better end)
                 end
             end
-            task.wait(0.15)  -- jeda antar download agar UI tetap responsif
+            task.wait(0.15)
         end
         thumbProcessing = false
     end)
@@ -1502,13 +1446,11 @@ end
 
 local function addToolboxResults(results)
     if #results == 0 then return end
-    -- Batch URL fetch sekali (1 HTTP)
     local ids = {}
     for _, r in ipairs(results) do ids[#ids + 1] = r.id end
     local urlMap = fetchThumbnailURLs(ids)
     for id, url in pairs(urlMap) do thumbURLsBatch[id] = url end
 
-    -- Tambah cell dengan rbxthumb (instan), lalu queue upgrade ke PNG asli
     for _, r in ipairs(results) do
         local initialThumb = "rbxthumb://type=Asset&id=" .. tostring(r.id) .. "&w=150&h=150"
         local choose, cell = toolboxList.add({
@@ -1640,7 +1582,7 @@ local function restoreScripts(objects, bytes, label)
     if not parsed then
         stats.err = perr or "gagal baca"
         if tostring(perr):find("ZSTD") then
-            stats.hint = "file ZSTD-compressed (default Studio baru). Source tidak bisa dibaca. Gunakan 'Save As' format RBXM (bukan ZSTD)."
+            stats.hint = "ZSTD-compressed. Gunakan 'Save As' RBXM non-ZSTD."
         end
         return stats
     end
@@ -1677,16 +1619,38 @@ local function describeScripts(stats)
     return msg
 end
 
-local function makeEnv(inst)
+local function makeEnv(inst, importRoot)
+    -- Virtual Game: Agar game:GetService("ReplicatedStorage") mencari di model lokal
+    local fakeGame = setmetatable({}, {
+        __index = function(_, key)
+            if key == "GetService" then
+                return function(self, name)
+                    if name == "ReplicatedStorage" and importRoot then
+                        local rs = importRoot:FindFirstChild("ReplicatedStorage")
+                        if rs then return rs end
+                        -- fallback cari folder bernama ReplicatedStorage di dalamnya
+                        for _, d in ipairs(importRoot:GetDescendants()) do
+                            if d.Name == "ReplicatedStorage" and d:IsA("Folder") then return d end
+                        end
+                    end
+                    return game:GetService(name)
+                end
+            end
+            return game[key]
+        end
+    })
+
     return setmetatable({
         script = inst,
+        game = fakeGame,
+        workspace = game:GetService("Workspace"),
         require = function(m)
             local info = typeof(m) == "Instance" and ScriptRegistry[m] or nil
             if info and m.ClassName == "ModuleScript" then
                 if moduleCache[m] then return moduleCache[m][1] end
                 local fn, err = loadstring(info.source, "=" .. info.path)
                 if not fn then error(err) end
-                setfenv(fn, makeEnv(m))
+                setfenv(fn, makeEnv(m, importRoot))
                 local result = fn()
                 moduleCache[m] = { result }
                 return result
@@ -1696,7 +1660,7 @@ local function makeEnv(inst)
     }, { __index = BASE_ENV })
 end
 
-local function runScripts(list)
+local function runScripts(list, importRoot)
     local started = 0
     for _, inst in ipairs(list) do
         local info = ScriptRegistry[inst]
@@ -1706,7 +1670,7 @@ local function runScripts(list)
             if not disabled then
                 local fn, err = loadstring(info.source, "=" .. info.path)
                 if fn then
-                    setfenv(fn, makeEnv(inst))
+                    setfenv(fn, makeEnv(inst, importRoot))
                     task.spawn(fn)
                     started += 1
                 else
@@ -1730,30 +1694,56 @@ local function emptyStats(reason)
     return { inFile = 0, matched = 0, setOK = 0, exported = 0, list = {}, err = reason }
 end
 
-local function loadFile(path)
-    if not getcustomassetAPI then return nil, "getcustomasset tidak tersedia" end
+-- Cache file ke nama aman untuk menghindari "Not found"
+local function prepareFile(path)
     local resolved = findFile(path)
-    if not resolved then
-        return nil, "file tidak ditemukan (cek console — path yang dicoba sudah dilog)"
-    end
-    print("[Punakawan] Loading: " .. resolved)
-    local okA, url = pcall(getcustomassetAPI, resolved)
-    if not okA or type(url) ~= "string" or url == "" then
-        return nil, "getcustomasset gagal untuk " .. resolved .. ": " .. tostring(url)
-    end
-    local objects
-    local ok, result = pcall(function() return game:GetObjects(url) end)
-    if ok and type(result) == "table" and #result > 0 then objects = result
-    else
-        local err1 = tostring(result)
-        print("[Punakawan] GetObjects gagal: " .. err1)
-        local ok2, single = pcall(function() return InsertService:LoadLocalAsset(url) end)
-        if ok2 and typeof(single) == "Instance" then objects = { single }
-        else return nil, "GetObjects: " .. err1 .. " | LoadLocalAsset: " .. tostring(single) end
-    end
+    if not resolved then return nil, "file tidak ditemukan" end
     local bytes = readFileBytes(resolved)
-    local stats = bytes and restoreScripts(objects, bytes, baseNameOf(path))
-        or emptyStats("readfile tidak tersedia")
+    if not bytes then return nil, "gagal baca bytes" end
+    if writefileAPI and makefolderAPI then
+        if not folderExists("PunawakanCache") then pcall(makefolderAPI, "PunawakanCache") end
+        local safeName = "PunawakanCache/f_" .. tostring(math.random(1, 999999)) .. "." .. getExtension(path)
+        if pcall(writefileAPI, safeName, bytes) then return safeName, bytes end
+    end
+    return resolved, bytes
+end
+
+local function loadFile(path)
+    local safePath, bytesOrErr = prepareFile(path)
+    if not safePath then return nil, bytesOrErr end
+    local bytes = bytesOrErr
+
+    local function tryLoad(p)
+        local errs = {}
+        -- 1. Coba direct path (banyak executor support ini)
+        local ok, res = pcall(function() return game:GetObjects(p) end)
+        if ok and type(res) == "table" and #res > 0 then return res end
+        table.insert(errs, "GetObjects(path): " .. tostring(res))
+
+        -- 2. Coba getcustomasset
+        if getcustomassetAPI then
+            local okA, url = pcall(getcustomassetAPI, p)
+            if okA and url then
+                local okB, res2 = pcall(function() return game:GetObjects(url) end)
+                if okB and type(res2) == "table" and #res2 > 0 then return res2 end
+                table.insert(errs, "GetObjects(url): " .. tostring(res2))
+            else
+                table.insert(errs, "getcustomasset: " .. tostring(url))
+            end
+        end
+
+        -- 3. Coba LoadLocalAsset
+        local okC, res3 = pcall(function() return InsertService:LoadLocalAsset(p) end)
+        if okC and typeof(res3) == "Instance" then return {res3} end
+        table.insert(errs, "LoadLocalAsset: " .. tostring(res3))
+
+        return nil, table.concat(errs, " | ")
+    end
+
+    local objects, err = tryLoad(safePath)
+    if not objects then return nil, err end
+    
+    local stats = restoreScripts(objects, bytes, baseNameOf(path))
     return objects, nil, stats
 end
 
@@ -1778,6 +1768,16 @@ local function fetchAssetBytes(id)
 end
 
 local function loadToolboxAsset(id)
+    local bytes = fetchAssetBytes(id)
+    if bytes and writefileAPI and makefolderAPI then
+        if not folderExists("PunawakanCache") then pcall(makefolderAPI, "PunawakanCache") end
+        local safeName = "PunawakanCache/tb_" .. tostring(id) .. ".rbxm"
+        if pcall(writefileAPI, safeName, bytes) then
+            return loadFile(safeName)
+        end
+    end
+    
+    -- Fallback ke GetObjects standar jika download gagal
     local objects
     local ok, result = pcall(function() return game:GetObjects("rbxassetid://" .. tostring(id)) end)
     if ok and type(result) == "table" and #result > 0 then objects = result
@@ -1785,11 +1785,10 @@ local function loadToolboxAsset(id)
         local err1 = tostring(result)
         local ok2, m = pcall(function() return InsertService:LoadAsset(id) end)
         if ok2 and typeof(m) == "Instance" then objects = { m }
-        else return nil, "GetObjects: " .. err1 .. " | LoadAsset: " .. tostring(m) end
+        else return nil, "Gagal muat. (Download: " .. tostring(bytes ~= nil) .. " | GetObjects: " .. err1 .. ")" end
     end
-    local bytes = fetchAssetBytes(id)
     local stats = bytes and restoreScripts(objects, bytes, "Toolbox_" .. tostring(id))
-        or emptyStats("file model asli tidak bisa diunduh (perlu auth atau host memblokir)")
+        or emptyStats("file model asli tidak bisa diunduh")
     return objects, nil, stats
 end
 
@@ -1812,14 +1811,6 @@ local function scanFiles()
         for _ in pairs(modelFiles) do mc += 1 end
         for _ in pairs(audioFiles) do ac += 1 end
         print("[Punakawan] Scan: " .. mc .. " model, " .. ac .. " audio")
-        local shown = 0
-        for path in pairs(modelFiles) do
-            if shown < 3 then
-                local resolved = findFile(path, true)
-                print("  " .. path .. " -> " .. (resolved and ("OK -> " .. resolved) or "TIDAK RESOLVE"))
-                shown += 1
-            end
-        end
         renderModels(); renderSongs()
         setStatus("Scan: " .. mc .. " model, " .. ac .. " lagu.")
         ModelScan.Text = "SCAN FILE"; MusicScan.Text = "SCAN LAGU"
@@ -1845,23 +1836,18 @@ ModelImport.Activated:Connect(function()
     local path = modelList.selected
     if not path then setStatus("Pilih file dulu."); return end
     importing = true
-    setStatus("Resolving & membaca " .. baseNameOf(path) .. "...")
+    setStatus("Memuat " .. baseNameOf(path) .. "...")
     task.spawn(function()
-        local resolved = findFile(path, false)
-        if not resolved then
-            setStatus("ERROR: file tidak ditemukan — lihat console untuk detail")
-            importing = false; return
-        end
         local isPlace = PLACE_EXT[getExtension(path)] == true
-        local objects, err, stats = loadFile(resolved)
+        local objects, err, stats = loadFile(path)
         if not objects then
             setStatus("IMPOR GAGAL: " .. tostring(err))
         else
-            local _, msg = importObjects(objects, isPlace, baseNameOf(path))
+            local _, msg, container = importObjects(objects, isPlace, baseNameOf(path))
             local extra = describeScripts(stats)
             if stats and #stats.list > 0 then
                 if runScriptsEnabled then
-                    extra = extra .. " | " .. runScripts(stats.list) .. " dijalankan"
+                    extra = extra .. " | " .. runScripts(stats.list, container) .. " dijalankan"
                 else
                     extra = extra .. " | RUN OFF"
                 end
@@ -1883,11 +1869,11 @@ ToolboxImport.Activated:Connect(function()
         if not objects then
             setStatus("IMPOR GAGAL: " .. tostring(err))
         else
-            local _, msg = importObjects(objects, false, "Toolbox_" .. tostring(id))
+            local _, msg, container = importObjects(objects, false, "Toolbox_" .. tostring(id))
             local extra = describeScripts(stats)
             if stats and #stats.list > 0 then
                 if runScriptsEnabled then
-                    extra = extra .. " | " .. runScripts(stats.list) .. " dijalankan"
+                    extra = extra .. " | " .. runScripts(stats.list, container) .. " dijalankan"
                 else
                     extra = extra .. " | RUN OFF"
                 end
@@ -1925,9 +1911,5 @@ else
 end
 
 print("======================================")
-print("PUNAKAWAN IMPORTER v5.3")
-print("listfiles:", listfilesAPI ~= nil, "| isfile:", isfileAPI ~= nil)
-print("readfile:", readfileAPI ~= nil, "| writefile:", writefileAPI ~= nil)
-print("getcustomasset:", getcustomassetAPI ~= nil, "| request:", requestAPI ~= nil)
-print("logo:", logoImage ~= nil, "| bg:", bgImage ~= nil)
+print("PUNAKAWAN IMPORTER v5.4 (STABLE)")
 print("======================================")
