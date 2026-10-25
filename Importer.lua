@@ -1,5 +1,5 @@
 --==============================================================
--- PUNAKAWAN COMMUNITY IMPORTER v5.6 (ZSTD + FULL SCRIPT IMPORT)
+-- PUNAKAWAN COMMUNITY IMPORTER v5.5 (PATCHED CORE - ZERO CACHE)
 --==============================================================
 
 local Players = game:GetService("Players")
@@ -196,390 +196,6 @@ local function readIntArray(data, pos, count)
 end
 local function accumulate(arr) for i = 2, #arr do arr[i] = arr[i] + arr[i - 1] end; return arr end
 local function readString(data, pos) local l = u32(data, pos); return ssub(data, pos + 4, pos + 3 + l), pos + 4 + l end
-
--- Decoder ZSTD murni Lua (RFC 8878) untuk chunk RBXM modern
-local ZP2 = {}
-for i = 0, 52 do ZP2[i] = 2 ^ i end
-local Z_LL_BASE, Z_LL_BITS, Z_ML_BASE, Z_ML_BITS = {}, {}, {}, {}
-for i = 0, 15 do Z_LL_BASE[i] = i; Z_LL_BITS[i] = 0 end
-do
-    local b = { 16, 18, 20, 22, 24, 28, 32, 40, 48, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536 }
-    local nb = { 1, 1, 1, 1, 2, 2, 3, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }
-    for i = 1, 20 do Z_LL_BASE[15 + i] = b[i]; Z_LL_BITS[15 + i] = nb[i] end
-end
-for i = 0, 31 do Z_ML_BASE[i] = i + 3; Z_ML_BITS[i] = 0 end
-do
-    local b = { 35, 37, 39, 41, 43, 47, 51, 59, 67, 83, 99, 131, 259, 515, 1027, 2051, 4099, 8195, 16387, 32771, 65539 }
-    local nb = { 1, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }
-    for i = 1, 21 do Z_ML_BASE[31 + i] = b[i]; Z_ML_BITS[31 + i] = nb[i] end
-end
-local Z_PRED = {
-    LL = { al = 6, p = { 4, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 2, 1, 1, 1, 1, 1, -1, -1, -1, -1 } },
-    ML = { al = 6, p = { 1, 4, 3, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1, -1, -1 } },
-    OF = { al = 5, p = { 1, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1 } },
-}
-
-local function zstdDecompress(src)
-    local floor = math.floor
-    local len = #src
-    local pos = 1
-    local out, n = {}, 0
-    local reps = { 1, 4, 8 }
-    local huff, tabLL, tabOF, tabML = nil, nil, nil, nil
-    local predCache = {}
-
-    -- baca nb bit (<=32) mulai bit ke-lo dari byte pertama 'base' (little-endian)
-    local function bitsAt(base, lo, nb)
-        if nb <= 0 then return 0 end
-        local bi = floor(lo / 8)
-        local sh = lo - bi * 8
-        local b0, b1, b2, b3, b4 = sbyte(src, base + bi, base + bi + 4)
-        local v = (b0 or 0) + (b1 or 0) * 256 + (b2 or 0) * 65536 + (b3 or 0) * 16777216 + (b4 or 0) * 4294967296
-        return floor(v / ZP2[sh]) % ZP2[nb]
-    end
-    local function backInit(first, last)
-        if last < first then error("zstd: stream kosong") end
-        local b = sbyte(src, last)
-        if not b or b == 0 then error("zstd: sentinel tidak ada") end
-        local h = 0
-        while b > 1 do b = floor(b / 2); h = h + 1 end
-        return { base = first, left = (last - first) * 8 + h }
-    end
-    local function backPeek(r, nb)
-        if nb == 0 then return 0 end
-        local lo = r.left - nb
-        if lo >= 0 then return bitsAt(r.base, lo, nb) end
-        local m = nb + lo
-        if m <= 0 then return 0 end
-        return bitsAt(r.base, 0, m) * ZP2[-lo]
-    end
-    local function backRead(r, nb)
-        local v = backPeek(r, nb)
-        r.left = r.left - nb
-        return v
-    end
-
-    local function buildFse(probs, maxSym, al)
-        local size = ZP2[al]
-        local sy, nb, bs, nextState = {}, {}, {}, {}
-        local high = size - 1
-        for s = 0, maxSym do
-            local p = probs[s] or 0
-            if p == -1 then sy[high] = s; high = high - 1; nextState[s] = 1
-            else nextState[s] = p end
-        end
-        local step = floor(size / 2) + floor(size / 8) + 3
-        local p0 = 0
-        for s = 0, maxSym do
-            local p = probs[s] or 0
-            for _ = 1, p do
-                sy[p0] = s
-                p0 = (p0 + step) % size
-                while p0 > high do p0 = (p0 + step) % size end
-            end
-        end
-        if p0 ~= 0 then error("zstd: tabel FSE tidak valid") end
-        for u = 0, size - 1 do
-            local s = sy[u]
-            local ns = nextState[s]
-            nextState[s] = ns + 1
-            local lg, t = 0, ns
-            while t > 1 do t = floor(t / 2); lg = lg + 1 end
-            local nbits = al - lg
-            nb[u] = nbits
-            bs[u] = ns * ZP2[nbits] - size
-        end
-        return { al = al, sy = sy, nb = nb, bs = bs }
-    end
-
-    local function readFse(p, maxAl, maxSym)
-        local bitPos = 0
-        local function rd(k) local v = bitsAt(p, bitPos, k); bitPos = bitPos + k; return v end
-        local al = rd(4) + 5
-        if al > maxAl then error("zstd: accuracy log terlalu besar") end
-        local size = ZP2[al]
-        local remaining, threshold, nbBits = size + 1, size, al + 1
-        local probs, sym = {}, 0
-        while remaining > 1 and sym <= maxSym do
-            local max = 2 * threshold - 1 - remaining
-            local peek = bitsAt(p, bitPos, nbBits)
-            local count
-            if peek % threshold < max then
-                count = peek % threshold
-                bitPos = bitPos + nbBits - 1
-            else
-                count = peek % (2 * threshold)
-                if count >= threshold then count = count - max end
-                bitPos = bitPos + nbBits
-            end
-            count = count - 1
-            if count < 0 then remaining = remaining - 1 else remaining = remaining - count end
-            probs[sym] = count
-            sym = sym + 1
-            if count == 0 then
-                while true do
-                    local r = rd(2)
-                    for _ = 1, r do probs[sym] = 0; sym = sym + 1 end
-                    if r < 3 then break end
-                end
-            end
-            while remaining < threshold do nbBits = nbBits - 1; threshold = floor(threshold / 2) end
-        end
-        if remaining ~= 1 then error("zstd: distribusi FSE rusak") end
-        return buildFse(probs, sym - 1, al), p + floor((bitPos + 7) / 8)
-    end
-
-    local function predefined(kind, maxSym)
-        local c = predCache[kind]
-        if c then return c end
-        local d = Z_PRED[kind]
-        local probs = {}
-        for i = 1, #d.p do probs[i - 1] = d.p[i] end
-        c = buildFse(probs, #d.p - 1, d.al)
-        predCache[kind] = c
-        return c
-    end
-
-    local function readHuffTree(p)
-        local hb = sbyte(src, p); p = p + 1
-        local weights, nw = {}, 0
-        if hb >= 128 then
-            nw = hb - 127
-            for i = 0, nw - 1 do
-                local b = sbyte(src, p + floor(i / 2))
-                if i % 2 == 0 then weights[i] = floor(b / 16) else weights[i] = b % 16 end
-            end
-            p = p + floor((nw + 1) / 2)
-        else
-            local tab, np = readFse(p, 6, 255)
-            local stop = p + hb
-            local r = backInit(np, stop - 1)
-            local s1 = backRead(r, tab.al)
-            local s2 = backRead(r, tab.al)
-            while true do
-                weights[nw] = tab.sy[s1]; nw = nw + 1
-                s1 = tab.bs[s1] + backRead(r, tab.nb[s1])
-                if r.left < 0 then weights[nw] = tab.sy[s2]; nw = nw + 1; break end
-                weights[nw] = tab.sy[s2]; nw = nw + 1
-                s2 = tab.bs[s2] + backRead(r, tab.nb[s2])
-                if r.left < 0 then weights[nw] = tab.sy[s1]; nw = nw + 1; break end
-                if nw > 255 then error("zstd: bobot terlalu banyak") end
-            end
-            p = stop
-        end
-        local total = 0
-        for i = 0, nw - 1 do
-            local w = weights[i]
-            if w > 0 then total = total + ZP2[w - 1] end
-        end
-        if total == 0 then error("zstd: bobot kosong") end
-        local maxBits, t = 0, total
-        while t >= 1 do t = floor(t / 2); maxBits = maxBits + 1 end
-        local rest = ZP2[maxBits] - total
-        local lw, t2 = 0, rest
-        while t2 > 1 do t2 = floor(t2 / 2); lw = lw + 1 end
-        if ZP2[lw] ~= rest then error("zstd: bobot terakhir tidak valid") end
-        weights[nw] = lw + 1; nw = nw + 1
-        if maxBits > 11 then error("zstd: tree huffman terlalu dalam") end
-        local hs, hn, idx = {}, {}, 0
-        for w = 1, maxBits do
-            local nbits = maxBits + 1 - w
-            local span = ZP2[w - 1]
-            for s = 0, nw - 1 do
-                if weights[s] == w then
-                    for k = 0, span - 1 do hs[idx + k] = s; hn[idx + k] = nbits end
-                    idx = idx + span
-                end
-            end
-        end
-        return { bits = maxBits, sym = hs, nb = hn }, p
-    end
-
-    local function huffStream(tree, first, last, count, dst, dn)
-        local r = backInit(first, last)
-        local mb, hs, hn = tree.bits, tree.sym, tree.nb
-        for i = 1, count do
-            local v = backPeek(r, mb)
-            local s = hs[v]
-            if not s then error("zstd: kode huffman tidak valid") end
-            dst[dn + i] = s
-            r.left = r.left - hn[v]
-        end
-        tick(count)
-        return dn + count
-    end
-
-    local function readLiterals(p)
-        local b0 = sbyte(src, p)
-        local ltype = b0 % 4
-        local sf = floor(b0 / 4) % 4
-        local lits = {}
-        if ltype == 0 or ltype == 1 then
-            local size, hdr
-            if sf == 0 or sf == 2 then size = floor(b0 / 8); hdr = 1
-            elseif sf == 1 then size = floor(b0 / 16) + sbyte(src, p + 1) * 16; hdr = 2
-            else size = floor(b0 / 16) + sbyte(src, p + 1) * 16 + sbyte(src, p + 2) * 4096; hdr = 3 end
-            p = p + hdr
-            if ltype == 0 then
-                for i = 1, size do lits[i] = sbyte(src, p + i - 1) end
-                p = p + size
-            else
-                local b = sbyte(src, p)
-                for i = 1, size do lits[i] = b end
-                p = p + 1
-            end
-            tick(size)
-            return lits, size, p
-        end
-        local hdr, nstreams, nbSz
-        if sf == 0 then hdr, nstreams, nbSz = 3, 1, 10
-        elseif sf == 1 then hdr, nstreams, nbSz = 3, 4, 10
-        elseif sf == 2 then hdr, nstreams, nbSz = 4, 4, 14
-        else hdr, nstreams, nbSz = 5, 4, 18 end
-        local v = 0
-        for i = 0, hdr - 1 do v = v + sbyte(src, p + i) * ZP2[8 * i] end
-        local regen = floor(v / 16) % ZP2[nbSz]
-        local comp = floor(v / ZP2[4 + nbSz]) % ZP2[nbSz]
-        p = p + hdr
-        local dataEnd = p + comp
-        local tree
-        if ltype == 2 then
-            tree, p = readHuffTree(p)
-            huff = tree
-        else
-            tree = huff
-            if not tree then error("zstd: tree huffman sebelumnya tidak ada") end
-        end
-        if nstreams == 1 then
-            huffStream(tree, p, dataEnd - 1, regen, lits, 0)
-        else
-            local s1 = sbyte(src, p) + sbyte(src, p + 1) * 256
-            local s2 = sbyte(src, p + 2) + sbyte(src, p + 3) * 256
-            local s3 = sbyte(src, p + 4) + sbyte(src, p + 5) * 256
-            local q = p + 6
-            local seg = floor((regen + 3) / 4)
-            local dn = 0
-            dn = huffStream(tree, q, q + s1 - 1, seg, lits, dn); q = q + s1
-            dn = huffStream(tree, q, q + s2 - 1, seg, lits, dn); q = q + s2
-            dn = huffStream(tree, q, q + s3 - 1, seg, lits, dn); q = q + s3
-            huffStream(tree, q, dataEnd - 1, regen - 3 * seg, lits, dn)
-        end
-        return lits, regen, dataEnd
-    end
-
-    local function seqTable(mode, p, maxAl, maxSym, prev, kind)
-        if mode == 0 then return predefined(kind), p
-        elseif mode == 1 then
-            local s = sbyte(src, p)
-            return { al = 0, sy = { [0] = s }, nb = { [0] = 0 }, bs = { [0] = 0 } }, p + 1
-        elseif mode == 2 then return readFse(p, maxAl, maxSym)
-        else
-            if not prev then error("zstd: tabel repeat belum ada") end
-            return prev, p
-        end
-    end
-
-    local function decodeBlock(p, bend)
-        local lits, nlit, q = readLiterals(p)
-        local litPos = 1
-        local b = sbyte(src, q)
-        local nseq = 0
-        if q >= bend or b == nil or b == 0 then nseq = 0
-        elseif b < 128 then nseq = b; q = q + 1
-        elseif b < 255 then nseq = (b - 128) * 256 + sbyte(src, q + 1); q = q + 2
-        else nseq = sbyte(src, q + 1) + sbyte(src, q + 2) * 256 + 32512; q = q + 3 end
-        if nseq > 0 then
-            local modes = sbyte(src, q); q = q + 1
-            tabLL, q = seqTable(floor(modes / 64) % 4, q, 9, 35, tabLL, "LL")
-            tabOF, q = seqTable(floor(modes / 16) % 4, q, 8, 31, tabOF, "OF")
-            tabML, q = seqTable(floor(modes / 4) % 4, q, 9, 52, tabML, "ML")
-            local r = backInit(q, bend - 1)
-            local sLL = backRead(r, tabLL.al)
-            local sOF = backRead(r, tabOF.al)
-            local sML = backRead(r, tabML.al)
-            for i = 1, nseq do
-                local ofc, mlc, llc = tabOF.sy[sOF], tabML.sy[sML], tabLL.sy[sLL]
-                local ofv = ZP2[ofc] + backRead(r, ofc)
-                local ml = Z_ML_BASE[mlc] + backRead(r, Z_ML_BITS[mlc])
-                local ll = Z_LL_BASE[llc] + backRead(r, Z_LL_BITS[llc])
-                local off
-                if ofv > 3 then
-                    off = ofv - 3
-                    reps[3] = reps[2]; reps[2] = reps[1]; reps[1] = off
-                else
-                    local idx = ofv
-                    if ll == 0 then idx = idx + 1 end
-                    if idx == 1 then off = reps[1]
-                    elseif idx == 2 then off = reps[2]; reps[2] = reps[1]; reps[1] = off
-                    elseif idx == 3 then off = reps[3]; reps[3] = reps[2]; reps[2] = reps[1]; reps[1] = off
-                    else off = reps[1] - 1; reps[3] = reps[2]; reps[2] = reps[1]; reps[1] = off end
-                end
-                for j = 0, ll - 1 do out[n + j + 1] = lits[litPos + j] end
-                n = n + ll; litPos = litPos + ll
-                if off < 1 or off > n then error("zstd: offset tidak valid") end
-                local from = n - off
-                for j = 1, ml do out[n + j] = out[from + j] end
-                n = n + ml
-                tick(ll + ml)
-                if i < nseq then
-                    sLL = tabLL.bs[sLL] + backRead(r, tabLL.nb[sLL])
-                    sML = tabML.bs[sML] + backRead(r, tabML.nb[sML])
-                    sOF = tabOF.bs[sOF] + backRead(r, tabOF.nb[sOF])
-                end
-            end
-        end
-        for j = litPos, nlit do n = n + 1; out[n] = lits[j] end
-    end
-
-    local didSize = { [0] = 0, 1, 2, 4 }
-    local fcsSize = { 2, 4, 8 }
-    while pos + 3 <= len do
-        local magic = u32(src, pos)
-        if magic == 0xFD2FB528 then
-            pos = pos + 4
-            local fhd = sbyte(src, pos); pos = pos + 1
-            local fcsFlag = floor(fhd / 64) % 4
-            local single = floor(fhd / 32) % 2
-            local cksum = floor(fhd / 4) % 2
-            if single == 0 then pos = pos + 1 end
-            pos = pos + didSize[fhd % 4]
-            if fcsFlag == 0 then pos = pos + single else pos = pos + fcsSize[fcsFlag] end
-            reps = { 1, 4, 8 }
-            huff, tabLL, tabOF, tabML = nil, nil, nil, nil
-            while true do
-                local h = sbyte(src, pos) + sbyte(src, pos + 1) * 256 + sbyte(src, pos + 2) * 65536
-                pos = pos + 3
-                local last = h % 2
-                local btype = floor(h / 2) % 4
-                local bsize = floor(h / 8)
-                if btype == 0 then
-                    for i = 0, bsize - 1 do out[n + i + 1] = sbyte(src, pos + i) end
-                    n = n + bsize; pos = pos + bsize
-                    tick(bsize)
-                elseif btype == 1 then
-                    local b = sbyte(src, pos)
-                    for i = 1, bsize do out[n + i] = b end
-                    n = n + bsize; pos = pos + 1
-                    tick(bsize)
-                elseif btype == 2 then
-                    decodeBlock(pos, pos + bsize)
-                    pos = pos + bsize
-                else
-                    error("zstd: tipe block tidak valid")
-                end
-                if last == 1 then break end
-            end
-            if cksum == 1 then pos = pos + 4 end
-        elseif magic >= 0x184D2A50 and magic <= 0x184D2A5F then
-            pos = pos + 8 + u32(src, pos + 4)
-        else
-            error("zstd: magic number salah")
-        end
-    end
-    local parts = {}
-    for k = 1, n, 2048 do parts[#parts + 1] = schar(table.unpack(out, k, math.min(k + 2047, n))) end
-    return table.concat(parts)
-end
 function RbxParser.parseBinary(data)
     if ssub(data, 1, 8) ~= "<roblox!" then return nil, "bukan biner RBXM" end
     local classes, inst, roots = {}, {}, {}
@@ -590,14 +206,8 @@ function RbxParser.parseBinary(data)
         if comp == 0 then chunk = ssub(data, start, start + unc - 1); pos = start + unc
         else
             local raw = ssub(data, start, start + comp - 1)
-            if ssub(raw, 1, 4) == "\40\181\47\253" then
-                local okZ, resZ = pcall(zstdDecompress, raw)
-                if not okZ then return nil, "ZSTD gagal: " .. tostring(resZ) end
-                chunk = resZ
-            else
-                chunk = lz4Decompress(raw)
-            end
-            pos = start + comp
+            if ssub(raw, 1, 4) == "\40\181\47\253" then return nil, "ZSTD_COMPRESSED" end
+            chunk = lz4Decompress(raw); pos = start + comp
         end
         if cname == "INST" then
             local classId = u32(chunk, 1); local className, p = readString(chunk, 5); p = p + 1
@@ -681,29 +291,17 @@ function RbxParser.countScripts(nodes)
     return n
 end
 local function matchLevel(liveList, parsedList, cb, path)
-    -- kelompokkan node hasil parse per (class, nama); tiap node hanya dipakai sekali
     local groups = {}
     for _, p in ipairs(parsedList) do
-        local k = p.class .. "\0" .. p.name
-        local g = groups[k]
-        if not g then g = {}; groups[k] = g end
+        local k = p.class .. "\0" .. p.name; local g = groups[k]
+        if not g then g = { i = 0 }; groups[k] = g end
         g[#g + 1] = p
     end
     for _, live in ipairs(liveList) do
-        local g = groups[live.ClassName .. "\0" .. live.Name]
-        if g and #g > 0 then
-            local pick = 1
-            if #g > 1 then
-                -- nama kembar: pilih kandidat dengan jumlah anak yang sama
-                local lc = #live:GetChildren()
-                for i, cand in ipairs(g) do
-                    if #cand.children == lc then pick = i; break end
-                end
-            end
-            local p = table.remove(g, pick)
-            local ppath = path .. "/" .. live.Name
-            cb(live, p, ppath)
-            matchLevel(live:GetChildren(), p.children, cb, ppath)
+        local k = live.ClassName .. "\0" .. live.Name; local g = groups[k]
+        if g then
+            g.i = g.i + 1; local p = g[g.i]
+            if p then local ppath = path .. "/" .. live.Name; cb(live, p, ppath); matchLevel(live:GetChildren(), p.children, cb, ppath) end
         end
     end
 end
@@ -982,81 +580,59 @@ local function placeAtSpawn(model)
     model:PivotTo(model:GetPivot() + d)
 end
 
---======================= IMPORT OBJECTS (v5.6) ================
+--======================= IMPORT OBJECTS (PATCHED RS) ==========
 local SERVICE_NAMES = {
     Lighting = true, ServerScriptService = true, ServerStorage = true, ReplicatedStorage = true, ReplicatedFirst = true,
     StarterGui = true, StarterPack = true, StarterPlayer = true, SoundService = true, Teams = true, Chat = true, TextChatService = true, MaterialService = true,
 }
--- registry: instance script -> { source, path }. Dideklarasikan di sini supaya clone ikut terdaftar.
-local ScriptRegistry = setmetatable({}, { __mode = "k" })
-local ScriptNoRun = setmetatable({}, { __mode = "k" })
-
--- salin registry dari objek asli ke hasil Clone() (Clone tidak membawa source script)
-local CloneTools = {}
-function CloneTools.register(orig, clone, report)
-    local info = ScriptRegistry[orig]
-    if info then
-        ScriptRegistry[clone] = info
-        if report then report.scripts[#report.scripts + 1] = clone end
-    end
-    local oc, cc = orig:GetChildren(), clone:GetChildren()
-    for i = 1, math.min(#oc, #cc) do CloneTools.register(oc[i], cc[i], report) end
-end
-function CloneTools.markNoRun(inst)
-    ScriptNoRun[inst] = true
-    for _, d in ipairs(inst:GetDescendants()) do ScriptNoRun[d] = true end
-end
-function CloneTools.into(child, parent, report)
-    local ok, clone = pcall(function() return child:Clone() end)
-    if not ok or typeof(clone) ~= "Instance" then report.failed = report.failed + 1; return false end
-    CloneTools.register(child, clone, report)
-    pcall(function() clone.Parent = parent end)
-    if clone.Parent == parent then report.services = report.services + 1; return true end
-    pcall(function() clone:Destroy() end)
-    report.failed = report.failed + 1
-    return false
-end
-
 local function mergeIntoLocalService(serviceObj, report)
     local okS, realS = pcall(function() return game:GetService(serviceObj.ClassName) end)
     local children = serviceObj:GetChildren()
-    if not okS or not realS then report.failed = report.failed + #children; return end
+    if not okS or not realS then report.failed += #children; return end
     for _, child in ipairs(children) do
-        if serviceObj.ClassName == "StarterGui" and child:IsA("LayerCollector") then
-            -- salinan di PlayerGui yang dijalankan; versi di StarterGui hanya disimpan
-            local okC, clone = pcall(function() return child:Clone() end)
-            if okC and typeof(clone) == "Instance" then
-                CloneTools.register(child, clone, report)
-                pcall(function() clone.Parent = PlayerGui end)
-                CloneTools.markNoRun(child)
-            end
-        end
+        if serviceObj.ClassName == "StarterGui" and child:IsA("LayerCollector") then pcall(function() child:Clone().Parent = PlayerGui end) end
         local ok = pcall(function() child.Parent = realS end)
-        if ok and child.Parent == realS then report.services = report.services + 1 else report.failed = report.failed + 1 end
+        if ok and child.Parent == realS then report.services += 1 else report.failed += 1 end
     end
 end
 local function collectImportables(objects, report)
     local list = {}
-    local function handleService(s, fromDataModel)
-        local cn = s.ClassName
-        if cn == "Workspace" then
-            for _, c in ipairs(s:GetChildren()) do list[#list + 1] = c end
-        elseif cn == "ReplicatedStorage" or cn == "Lighting" then
-            local real = game:GetService(cn)
-            for _, child in ipairs(s:GetChildren()) do CloneTools.into(child, real, report) end
-        elseif SERVICE_NAMES[cn] or fromDataModel then
-            mergeIntoLocalService(s, report)
-        else
-            list[#list + 1] = s
-        end
-    end
     for _, obj in ipairs(objects) do
         if typeof(obj) == "Instance" then
             if obj.ClassName == "DataModel" then
-                for _, s in ipairs(obj:GetChildren()) do handleService(s, true) end
-            else
-                handleService(obj, false)
-            end
+                for _, s in ipairs(obj:GetChildren()) do
+                    if s.ClassName == "Workspace" then
+                        for _, c in ipairs(s:GetChildren()) do list[#list + 1] = c end
+                    elseif s.ClassName == "ReplicatedStorage" then
+                        -- [PATCH] SOLUSI INFINITE YIELD: Salin isi ReplicatedStorage langsung ke game
+                        local realRS = game:GetService("ReplicatedStorage")
+                        for _, child in ipairs(s:GetChildren()) do
+                            pcall(function() 
+                                if not realRS:FindFirstChild(child.Name) then
+                                    local clone = child:Clone()
+                                    clone.Parent = realRS 
+                                end
+                            end)
+                        end
+                        list[#list + 1] = s
+                    else mergeIntoLocalService(s, report) end
+                end
+            elseif obj.ClassName == "Workspace" then
+                for _, c in ipairs(obj:GetChildren()) do list[#list + 1] = c end
+            elseif obj.ClassName == "ReplicatedStorage" then
+                -- [PATCH] SOLUSI INFINITE YIELD
+                local realRS = game:GetService("ReplicatedStorage")
+                for _, child in ipairs(obj:GetChildren()) do
+                    pcall(function() 
+                        if not realRS:FindFirstChild(child.Name) then
+                            local clone = child:Clone()
+                            clone.Parent = realRS 
+                        end
+                    end)
+                end
+                list[#list + 1] = obj
+            elseif SERVICE_NAMES[obj.ClassName] then mergeIntoLocalService(obj, report)
+            else list[#list + 1] = obj end
         end
     end
     return list
@@ -1066,16 +642,16 @@ local function wrapObjects(items, name, report)
     for _, item in ipairs(items) do
         if item:IsA("LayerCollector") then
             local ok = pcall(function() item.Parent = PlayerGui end)
-            if ok and item.Parent == PlayerGui then report.gui = report.gui + 1 else report.failed = report.failed + 1 end
+            if ok and item.Parent == PlayerGui then report.gui += 1 else report.failed += 1 end
         else
             local ok = pcall(function() item.Parent = container end)
-            if not ok or item.Parent ~= container then report.failed = report.failed + 1 end
+            if not ok or item.Parent ~= container then report.failed += 1 end
         end
     end
     return container
 end
 local function importObjects(objects, isPlace, baseName)
-    local report = { services = 0, failed = 0, gui = 0, scripts = {} }
+    local report = { services = 0, failed = 0, gui = 0 }
     local items = collectImportables(objects, report)
     local target
     if #items == 1 and items[1]:IsA("Model") and not isPlace then target = items[1]
@@ -1086,14 +662,14 @@ local function importObjects(objects, isPlace, baseName)
         target.Parent = workspace; table.insert(importedModels, target); placed = #items
         if not ok then placeNote = " | gagal posisi: " .. tostring(err) end
     elseif target then target:Destroy() end
-    if placed == 0 and report.services == 0 and report.gui == 0 then return false, "Tidak ada objek.", nil, report end
+    if placed == 0 and report.services == 0 and report.gui == 0 then return false, "Tidak ada objek.", nil end
     local parts = {}
     if placed > 0 then parts[#parts + 1] = placed .. " objek" end
     if report.services > 0 then parts[#parts + 1] = report.services .. " ke service" end
     if report.gui > 0 then parts[#parts + 1] = report.gui .. " GUI" end
     local msg = "BERHASIL: " .. table.concat(parts, ", ") .. "."
     if report.failed > 0 then msg = msg .. " | " .. report.failed .. " ditolak." end
-    return true, msg .. placeNote, target, report
+    return true, msg .. placeNote, target
 end
 
 --======================= FILE SCANNER =========================
@@ -1238,24 +814,18 @@ local toolboxList = newGrid(ToolboxPage, UDim2.fromOffset(0, 76), UDim2.new(1, 0
     setStatus("Dipilih: " .. e.text .. " [" .. tostring(e.value) .. "]")
 end, function() runToolboxSearch(true) end)
 
-local function httpBody(url, headers)
-    local function viaRequest(h)
-        if not requestAPI then return nil end
-        local ok2, res = pcall(requestAPI, { Url = url, Method = "GET", Headers = h or { ["Accept"] = "*/*" } })
+local function httpBody(url)
+    local ok, body = pcall(function() return game:HttpGet(url) end)
+    if ok and type(body) == "string" and body ~= "" then return body end
+    if requestAPI then
+        local ok2, res = pcall(requestAPI, { Url = url, Method = "GET", Headers = { ["Accept"] = "*/*" } })
         if ok2 and type(res) == "table" then
             local code = res.StatusCode or res.status_code; local b = res.Body or res.body; local succ = res.Success
             if succ == nil then succ = (type(code) ~= "number") or code < 400 end
             if succ and type(b) == "string" and b ~= "" then return b end
         end
-        return nil
     end
-    if headers then
-        local b = viaRequest(headers)
-        if b then return b end
-    end
-    local ok, body = pcall(function() return game:HttpGet(url) end)
-    if ok and type(body) == "string" and body ~= "" then return body end
-    return viaRequest(nil)
+    return nil
 end
 local function httpJson(path)
     for index, host in ipairs(API_HOSTS) do
@@ -1399,154 +969,95 @@ ToolboxSearch.FocusLost:Connect(function(enter) if enter then runToolboxSearch(f
 local toolboxOpened = false
 tabButtons.toolbox.Activated:Connect(function() if not toolboxOpened then toolboxOpened = true; runToolboxSearch(false) end end)
 
---======================= SCRIPT RECOVERY (v5.6) ===============
+--======================= SCRIPT RECOVERY (PURE SOURCE) ========
 local ScriptClasses = { Script = true, LocalScript = true, ModuleScript = true }
+local ScriptRegistry = setmetatable({}, { __mode = "k" })
 local moduleCache = setmetatable({}, { __mode = "k" })
-local decompileAPI = getAPI("decompile")
 local okEnv, BASE_ENV = pcall(function() return getfenv() end)
 if not okEnv or type(BASE_ENV) ~= "table" then BASE_ENV = _G end
 
 local function sanitizeName(s) local c = tostring(s):gsub("[^%w%._%- ]", "_"); if c == "" then c = "_" end; return c end
 
--- Tulis source ke instance script. Kosong dianggap sukses (tidak ada yang perlu ditulis).
+-- [PATCH] FUNGSI INJEKSI SOURCE (Bypass Read-Only & Kloning)
 local function setScriptSource(inst, source)
-    if source == nil then return false end
-    if source == "" then return true end
-
-    -- 1. properti Source langsung (diverifikasi dengan baca ulang)
-    local ok1 = pcall(function() inst.Source = source end)
-    if ok1 then
-        local okR, cur = pcall(function() return inst.Source end)
-        if okR and cur == source then return true end
+    if not source or source == "" then return false end
+    
+    -- 1. Properti Source langsung
+    local ok2 = pcall(function() inst.Source = source end)
+    if ok2 then
+        local checkOk, checkSrc = pcall(function() return inst.Source end)
+        if checkOk and checkSrc == source then return true end
     end
-    -- 2. setscriptsource milik executor
+
+    -- 2. API setscriptsource
     if setscriptsourceAPI then
         if pcall(setscriptsourceAPI, inst, source) then return true end
     end
+    
     -- 3. sethiddenproperty
     if sethiddenpropertyAPI then
         if pcall(sethiddenpropertyAPI, inst, "Source", source) then return true end
     end
+
+    -- 4. Trik Clone (Membuat instance baru untuk melepas Read Only)
+    if inst.Parent ~= nil then
+        local success = pcall(function()
+            local clone = inst:Clone()
+            if setscriptsourceAPI then pcall(setscriptsourceAPI, clone, source) end
+            pcall(function() clone.Source = source end)
+            local parent = inst.Parent
+            local name = inst.Name
+            inst:Destroy()
+            clone.Name = name
+            clone.Parent = parent
+        end)
+        if success then return true end
+    end
+    
     return false
 end
 
 local function exportScripts(label, items)
-    if not writefileAPI or #items == 0 then return 0 end
-    local function ensureFolder(p) if makefolderAPI and not folderExists(p) then pcall(makefolderAPI, p) end end
-    local base = SCRIPT_EXPORT_FOLDER .. "/" .. sanitizeName(label); ensureFolder(SCRIPT_EXPORT_FOLDER); ensureFolder(base)
-    local used, count = {}, 0
-    for _, item in ipairs(items) do
-        local segs = {}; for seg in string.gmatch(item.path, "[^/]+") do segs[#segs + 1] = sanitizeName(seg) end
-        if #segs > 0 then
-            local folder = base; for i = 1, #segs - 1 do folder = folder .. "/" .. segs[i]; ensureFolder(folder) end
-            local file = folder .. "/" .. segs[#segs]; local candidate, n = file .. ".lua", 1
-            while used[string.lower(candidate)] do n = n + 1; candidate = file .. "_" .. n .. ".lua" end
-            used[string.lower(candidate)] = true
-            if pcall(writefileAPI, candidate, item.source) then count = count + 1 end
-        end
-    end
-    return count
+    -- [PATCH] Mematikan fitur ekspor agar tidak membuat folder PunawakanScripts
+    return 0
 end
 
 local function restoreScripts(objects, bytes, label)
-    local stats = { inFile = 0, matched = 0, setOK = 0, exported = 0, fallback = 0, list = {}, err = nil, hint = nil }
+    local stats = { inFile = 0, matched = 0, setOK = 0, exported = 0, list = {}, err = nil, hint = nil }
+    local okP, r1, r2 = pcall(RbxParser.parse, bytes); local parsed, perr
+    if okP then parsed, perr = r1, r2 else perr = tostring(r1) end
+    if not parsed then
+        stats.err = perr or "gagal baca"
+        if tostring(perr):find("ZSTD") then stats.hint = "ZSTD-compressed. Gunakan 'Save As' RBXM non-ZSTD." end
+        return stats
+    end
+    stats.inFile = RbxParser.countScripts(parsed)
+    if stats.inFile == 0 then return stats end
     local exportItems = {}
-
-    -- Cadangan bila source tidak ada di file: baca properti Source, lalu decompile bawaan executor.
-    local function getFallbackSource(inst)
-        local ok, src = pcall(function() return inst.Source end)
-        if ok and type(src) == "string" and src ~= "" then return src, "Source" end
-        if decompileAPI then
-            local ok2, res = pcall(decompileAPI, inst)
-            if ok2 and type(res) == "string" and res ~= "" then
-                local first = string.lower(res:match("^[^\n]*") or "")
-                local bad = string.sub(first, 1, 2) == "--" and (first:find("fail", 1, true) or first:find("error", 1, true) or first:find("unable", 1, true))
-                if not bad then return res, "decompile" end
-            end
+    pcall(RbxParser.match, objects, parsed, function(live, p, path)
+        if p.source ~= nil and ScriptClasses[live.ClassName] then
+            stats.matched += 1; ScriptRegistry[live] = { source = p.source, path = path }; table.insert(stats.list, live)
+            -- SUNTIKKAN SOURCE ASLI
+            if setScriptSource(live, p.source) then stats.setOK += 1 end
+            table.insert(exportItems, { path = path, source = p.source })
         end
-        return nil
-    end
-
-    -- 1) ambil source asli dari isi file (RBXM biner LZ4/ZSTD atau XML)
-    if type(bytes) == "string" and #bytes > 0 then
-        local okP, r1, r2 = pcall(RbxParser.parse, bytes)
-        local parsed, perr
-        if okP then parsed, perr = r1, r2 else perr = tostring(r1) end
-        if not parsed then
-            stats.err = perr or "gagal baca"
-            if tostring(perr):find("ZSTD") then stats.hint = "decoder ZSTD gagal; simpan ulang model (Save As .rbxm) lalu coba lagi." end
-        else
-            stats.inFile = RbxParser.countScripts(parsed)
-            if stats.inFile > 0 then
-                local okM, errM = pcall(RbxParser.match, objects, parsed, function(live, p, path)
-                    if p.source ~= nil and ScriptClasses[live.ClassName] and not ScriptRegistry[live] then
-                        stats.matched = stats.matched + 1
-                        ScriptRegistry[live] = { source = p.source, path = path }
-                        table.insert(stats.list, live)
-                        if setScriptSource(live, p.source) then stats.setOK = stats.setOK + 1 end
-                        table.insert(exportItems, { path = path, source = p.source })
-                    end
-                end)
-                if not okM then stats.err = "pencocokan: " .. tostring(errM) end
-            end
-        end
-    else
-        stats.err = "file asli tidak tersedia"
-    end
-
-    -- 2) script yang belum punya source: coba Source / decompile
-    local function walk(inst, parentPath)
-        local path = parentPath .. "/" .. inst.Name
-        if ScriptClasses[inst.ClassName] and not ScriptRegistry[inst] then
-            local src, how = getFallbackSource(inst)
-            if src then
-                ScriptRegistry[inst] = { source = src, path = path }
-                table.insert(stats.list, inst)
-                stats.fallback = stats.fallback + 1
-                if how == "Source" or setScriptSource(inst, src) then stats.setOK = stats.setOK + 1 end
-                table.insert(exportItems, { path = path, source = src })
-            end
-        end
-        for _, c in ipairs(inst:GetChildren()) do walk(c, path) end
-    end
-    for _, o in ipairs(objects) do
-        if typeof(o) == "Instance" then
-            if o.ClassName == "DataModel" then
-                for _, c in ipairs(o:GetChildren()) do pcall(walk, c, "") end
-            else
-                pcall(walk, o, "")
-            end
-        end
-    end
-
+    end)
+    -- exportScripts dimatikan, tidak ada folder
     if EXPORT_SCRIPT_FILES then stats.exported = exportScripts(label, exportItems) end
     return stats
 end
 
 local function describeScripts(stats)
     if not stats then return "" end
-    local total = stats.matched + (stats.fallback or 0)
-    if total == 0 then
-        if stats.err then
-            local msg = " | Script tak terbaca: " .. tostring(stats.err)
-            if stats.hint then msg = msg .. " — " .. stats.hint end
-            return msg
-        end
-        if stats.inFile == 0 then return " | Tidak ada script." end
-        return " | Ada " .. stats.inFile .. " script di file tapi tidak cocok dengan objek hasil load."
-    end
-    local msg = " | Script " .. total
-    if stats.inFile > 0 then msg = msg .. "/" .. stats.inFile end
-    if (stats.fallback or 0) > 0 then msg = msg .. " (" .. stats.fallback .. " via decompile)" end
-    local live = stats.liveCount or total
-    local okc = stats.injected or stats.setOK
-    msg = msg .. ", " .. okc .. "/" .. live .. " source terpasang"
-    if stats.exported > 0 then msg = msg .. ", " .. stats.exported .. " ke " .. SCRIPT_EXPORT_FOLDER end
-    if okc < live then msg = msg .. " | executor tidak bisa menulis Source (script tetap jalan dari salinan, lihat folder " .. SCRIPT_EXPORT_FOLDER .. ")" end
+    if stats.err then local msg = " | Script tak terbaca: " .. tostring(stats.err); if stats.hint then msg = msg .. " — " .. stats.hint end; return msg end
+    if stats.inFile == 0 then return " | Tidak ada script." end
+    local msg = " | Script " .. stats.matched .. "/" .. stats.inFile
+    if stats.setOK > 0 then msg = msg .. ", " .. stats.setOK .. " terpasang" end
+    if stats.setOK < stats.matched then msg = msg .. " | " .. (stats.matched - stats.setOK) .. " gagal setSource" end
     return msg
 end
 
--- SCRIPT MURNI (TANPA FAKE ENV, SESUAI PERMINTAAN)
+-- SCRIPT MURNI (TANPA FAKE ENV)
 local function makeEnv(inst)
     return setmetatable({
         script = inst,
@@ -1579,7 +1090,7 @@ local function runScripts(list)
                     task.spawn(fn)
                     started += 1
                 else
-                    warn("[Punakawan] compile gagal " .. info.path .. ": " .. tostring(err))
+                    warn("[Punawakan] compile gagal " .. info.path .. ": " .. tostring(err))
                 end
             end
         end
@@ -1594,17 +1105,14 @@ local function readFileBytes(resolvedPath)
     if ok and type(data) == "string" and #data > 0 then return data end
     return nil
 end
+local function emptyStats(reason) return { inFile = 0, matched = 0, setOK = 0, exported = 0, list = {}, err = reason } end
 
+-- [PATCH] Fungsi prepareFile dihapus pembuatan foldernya
 local function prepareFile(path)
     local resolved = findFile(path)
     if not resolved then return nil, "file tidak ditemukan" end
     local bytes = readFileBytes(resolved)
     if not bytes then return nil, "gagal baca bytes" end
-    if writefileAPI and makefolderAPI then
-        if not folderExists("PunawakanCache") then pcall(makefolderAPI, "PunawakanCache") end
-        local safeName = "PunawakanCache/f_" .. tostring(math.random(1, 999999)) .. "." .. getExtension(path)
-        if pcall(writefileAPI, safeName, bytes) then return safeName, bytes end
-    end
     return resolved, bytes
 end
 
@@ -1643,54 +1151,36 @@ end
 
 local ASSET_ENDPOINTS = {
     "https://assetdelivery.roblox.com/v1/asset/?id=", "https://assetdelivery.roblox.com/v1/asset?id=",
-    "https://assetdelivery.roproxy.com/v1/asset/?id=", "https://www.roblox.com/asset/?id=",
+    "https://assetdelivery.roblox.com/v2/asset/?id=", "https://assetdelivery.roproxy.com/v1/asset/?id=", "https://www.roblox.com/asset/?id=",
 }
--- Unduh file model ASLI (lengkap dengan isi script) dari Roblox.
 local function fetchAssetBytes(id)
-    local function looksLikeRbx(b)
-        if type(b) ~= "string" or #b < 100 then return false end
-        local head = string.sub(b, 1, 200)
-        return string.sub(head, 1, 8) == "<roblox!" or string.find(head, "<roblox", 1, true) ~= nil
-    end
-    local ASSET_V2 = { "https://assetdelivery.roblox.com/v2/assetId/", "https://assetdelivery.roproxy.com/v2/assetId/" }
-    local hdr = { ["Accept"] = "*/*", ["User-Agent"] = "Roblox/WinInet", ["Roblox-Place-Id"] = tostring(game.PlaceId) }
-    -- jalur 1: v2 -> JSON berisi lokasi CDN
-    for _, base in ipairs(ASSET_V2) do
-        local body = httpBody(base .. tostring(id), hdr)
-        if body then
-            local ok, data = pcall(function() return HttpService:JSONDecode(body) end)
-            if ok and type(data) == "table" and type(data.locations) == "table" then
-                for _, loc in ipairs(data.locations) do
-                    if type(loc) == "table" and type(loc.location) == "string" then
-                        local b = httpBody(loc.location, hdr)
-                        if looksLikeRbx(b) then return b end
-                    end
-                end
-            end
-        end
-    end
-    -- jalur 2: v1 langsung
     for _, base in ipairs(ASSET_ENDPOINTS) do
-        local b = httpBody(base .. tostring(id), hdr)
-        if looksLikeRbx(b) then return b end
+        local body = httpBody(base .. tostring(id))
+        if type(body) == "string" and #body > 100 then
+            local head = string.sub(body, 1, 200)
+            if string.sub(head, 1, 8) == "<roblox!" or string.find(head, "<roblox", 1, true) then return body end
+        end
     end
     return nil
 end
 
+-- [PATCH] loadToolboxAsset tanpa membuat cache folder
 local function loadToolboxAsset(id)
     local bytes = fetchAssetBytes(id)
-    local lastErr
-    if bytes and writefileAPI and makefolderAPI then
-        if not folderExists("PunawakanCache") then pcall(makefolderAPI, "PunawakanCache") end
-        local safeName = "PunawakanCache/tb_" .. tostring(id) .. ".rbxm"
-        if pcall(writefileAPI, safeName, bytes) then
-            local objs, err, stats = loadFile(safeName)
-            if objs then return objs, nil, stats end
-            lastErr = err
+    if bytes then
+        local objects
+        local ok, result = pcall(function() return game:GetObjects("rbxassetid://" .. tostring(id)) end)
+        if ok and type(result) == "table" and #result > 0 then objects = result
+        else
+            local err1 = tostring(result)
+            local ok2, m = pcall(function() return InsertService:LoadAsset(id) end)
+            if ok2 and typeof(m) == "Instance" then objects = { m }
+            else return nil, "Gagal muat (GetObjects/LoadAsset): " .. err1 end
         end
+        local stats = restoreScripts(objects, bytes, "Toolbox_" .. tostring(id))
+        return objects, nil, stats
     end
-
-    -- cadangan: load langsung dari server, lalu pulihkan script dari bytes (jika ada) atau decompile
+    
     local objects
     local ok, result = pcall(function() return game:GetObjects("rbxassetid://" .. tostring(id)) end)
     if ok and type(result) == "table" and #result > 0 then objects = result
@@ -1698,44 +1188,10 @@ local function loadToolboxAsset(id)
         local err1 = tostring(result)
         local ok2, m = pcall(function() return InsertService:LoadAsset(id) end)
         if ok2 and typeof(m) == "Instance" then objects = { m }
-        else return nil, "Gagal muat. (Download: " .. tostring(bytes ~= nil) .. " | GetObjects: " .. err1 .. (lastErr and (" | File: " .. tostring(lastErr)) or "") .. ")" end
+        else return nil, "Gagal muat. (Download: false | GetObjects: " .. err1 .. ")" end
     end
-    local stats = restoreScripts(objects, bytes, "Toolbox_" .. tostring(id))
-    if not bytes then stats.err = "file model asli tidak bisa diunduh (asset privat / HTTP diblokir)" end
+    local stats = emptyStats("file model asli tidak bisa diunduh")
     return objects, nil, stats
-end
-
--- Selesaikan import: tempatkan objek, pasang ulang source ke instance akhir, lalu jalankan script.
-local function finishImport(objects, stats, isPlace, baseName)
-    local _, msg, _, report = importObjects(objects, isPlace, baseName)
-    local live, runnable, seen = {}, {}, {}
-    local function add(inst)
-        if inst and not seen[inst] and ScriptRegistry[inst] then
-            local inGame = false
-            pcall(function() inGame = inst.Parent ~= nil and inst:IsDescendantOf(game) end)
-            if inGame then
-                seen[inst] = true
-                live[#live + 1] = inst
-                if not ScriptNoRun[inst] then runnable[#runnable + 1] = inst end
-            end
-        end
-    end
-    if stats and stats.list then for _, i in ipairs(stats.list) do add(i) end end
-    if report and report.scripts then for _, i in ipairs(report.scripts) do add(i) end end
-
-    local injected = 0
-    for _, inst in ipairs(live) do
-        local info = ScriptRegistry[inst]
-        if info and setScriptSource(inst, info.source) then injected = injected + 1 end
-    end
-    if stats then stats.injected = injected; stats.liveCount = #live end
-
-    local extra = describeScripts(stats)
-    if #runnable > 0 then
-        if runScriptsEnabled then extra = extra .. " | " .. runScripts(runnable) .. " dijalankan"
-        else extra = extra .. " | RUN OFF" end
-    end
-    return msg .. extra
 end
 
 --======================= ACTIONS ==============================
@@ -1763,12 +1219,25 @@ ModelImport.Activated:Connect(function()
     importing = true; setStatus("Memuat " .. baseNameOf(path) .. "...")
     task.spawn(function()
         local isPlace = PLACE_EXT[getExtension(path)] == true
-        local okL, objects, err, stats = pcall(loadFile, path)
-        if not okL then setStatus("IMPOR GAGAL: " .. tostring(objects))
-        elseif not objects then setStatus("IMPOR GAGAL: " .. tostring(err))
+        local objects, err, stats = loadFile(path)
+        if not objects then setStatus("IMPOR GAGAL: " .. tostring(err))
         else
-            local okF, res = pcall(finishImport, objects, stats, isPlace, baseNameOf(path))
-            setStatus(okF and res or ("IMPOR GAGAL: " .. tostring(res)))
+            local _, msg, container = importObjects(objects, isPlace, baseNameOf(path))
+            
+            -- INJEKSI ULANG SETELAH MASUK KE WORKSPACE
+            if stats and stats.list then
+                for _, scriptInstance in ipairs(stats.list) do
+                    local sInfo = ScriptRegistry[scriptInstance]
+                    if sInfo and scriptInstance.Parent then setScriptSource(scriptInstance, sInfo.source) end
+                end
+            end
+
+            local extra = describeScripts(stats)
+            if stats and #stats.list > 0 then
+                if runScriptsEnabled then extra = extra .. " | " .. runScripts(stats.list) .. " dijalankan"
+                else extra = extra .. " | RUN OFF" end
+            end
+            setStatus(msg .. extra)
         end
         importing = false
     end)
@@ -1779,12 +1248,25 @@ ToolboxImport.Activated:Connect(function()
     if not id then setStatus("Pilih model dulu."); return end
     importing = true; setStatus("Mengunduh model " .. tostring(id) .. "...")
     task.spawn(function()
-        local okL, objects, err, stats = pcall(loadToolboxAsset, id)
-        if not okL then setStatus("IMPOR GAGAL: " .. tostring(objects))
-        elseif not objects then setStatus("IMPOR GAGAL: " .. tostring(err))
+        local objects, err, stats = loadToolboxAsset(id)
+        if not objects then setStatus("IMPOR GAGAL: " .. tostring(err))
         else
-            local okF, res = pcall(finishImport, objects, stats, false, "Toolbox_" .. tostring(id))
-            setStatus(okF and res or ("IMPOR GAGAL: " .. tostring(res)))
+            local _, msg, container = importObjects(objects, false, "Toolbox_" .. tostring(id))
+            
+            -- INJEKSI ULANG SETELAH MASUK KE WORKSPACE
+            if stats and stats.list then
+                for _, scriptInstance in ipairs(stats.list) do
+                    local sInfo = ScriptRegistry[scriptInstance]
+                    if sInfo and scriptInstance.Parent then setScriptSource(scriptInstance, sInfo.source) end
+                end
+            end
+
+            local extra = describeScripts(stats)
+            if stats and #stats.list > 0 then
+                if runScriptsEnabled then extra = extra .. " | " .. runScripts(stats.list) .. " dijalankan"
+                else extra = extra .. " | RUN OFF" end
+            end
+            setStatus(msg .. extra)
         end
         importing = false
     end)
@@ -1807,5 +1289,5 @@ if not readfileAPI then missing[#missing + 1] = "readfile" end
 if #missing > 0 then setStatus("API hilang: " .. table.concat(missing, ", ")) else setStatus("Siap. Tekan SCAN FILE.") end
 
 print("======================================")
-print("PUNAKAWAN IMPORTER v5.6 (ZSTD + FULL SCRIPT IMPORT)")
+print("PUNAKAWAN IMPORTER v5.5 (PATCHED ZERO CACHE)")
 print("======================================")
