@@ -1,6 +1,7 @@
 --==============================================================
--- PUNAKAWAN COMMUNITY IMPORTER v5.2
--- Fixes: file resolution, thumbnails, script execution
+-- PUNAKAWAN COMMUNITY IMPORTER v5.3
+-- FIX: getcustomasset-first file resolution, throttled toolbox
+--      thumbnails, better script recovery diagnostics
 --==============================================================
 
 local Players = game:GetService("Players")
@@ -19,11 +20,7 @@ local USE_SPAWNLOCATION = false
 local STACK_ON_PREVIOUS = false
 local ROOT_PATHS = { "", ".", "workspace", "Workspace" }
 local MAX_DEPTH = 20
-
--- PENTING: default ON supaya script dari model/place langsung dijalankan
--- (client-side executor tidak auto-run Script di Workspace)
 local RUN_SCRIPTS_DEFAULT = true
-
 local EXPORT_SCRIPT_FILES = true
 local SCRIPT_EXPORT_FOLDER = "PunawakanScripts"
 
@@ -40,8 +37,6 @@ local LOGO_FILE = "punakawan_logo.png"
 local LOGO_ASSET_ID = ""
 local BG_FILE = "punawakan_bg.png"
 local BG_ASSET_ID = ""
--- fallback: coba juga nama lama
-if not BG_FILE or BG_FILE == "" then BG_FILE = "punakawan_bg.png" end
 
 local MODEL_EXT = { rbxm = true, rbxmx = true, rbxl = true, rbxlx = true }
 local PLACE_EXT = { rbxl = true, rbxlx = true }
@@ -68,7 +63,6 @@ local writefileAPI = getAPI("writefile")
 local makefolderAPI = getAPI("makefolder")
 local setscriptsourceAPI = getAPI("setscriptsource")
 local sethiddenpropertyAPI = getAPI("sethiddenproperty")
-
 local requestAPI = getAPI("request") or getAPI("http_request")
 if not requestAPI then
     local ok, fn = pcall(function() return syn.request end)
@@ -81,20 +75,17 @@ local function normalizePath(path)
     p = p:gsub("\\", "/"):gsub("/+", "/"):gsub("/$", "")
     return p
 end
-
 local function getExtension(path)
     return string.lower(tostring(path):match("%.([^%.\\/]+)$") or "")
 end
-
 local function baseNameOf(path)
     return tostring(path):match("([^/]+)%.[^%.]+$") or tostring(path):match("([^/]+)$") or "Imported"
 end
-
 local function trim(s)
     return (tostring(s):gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
--- Bangun daftar kandidat path yang mungkin diterima isfile/readfile/getcustomasset
+-- Variasi path: coba semua kemungkinan yang executor terima
 local function fileVariants(path)
     local p = normalizePath(path)
     local list, seen = {}, {}
@@ -105,34 +96,47 @@ local function fileVariants(path)
         end
     end
 
+    -- 1) as-is
     add(p)
-    add("./" .. p)
 
-    -- strip prefix absolut: /data/.../workspace/file -> file
-    local stripped1 = p:match("/workspace/(.+)$") or p:match("^[Ww]orkspace/(.+)$")
-    if stripped1 then
-        add(stripped1)
-        add("./" .. stripped1)
+    -- 2) strip leading ./ atau /
+    local stripped = p:gsub("^%.?/", "")
+    if stripped ~= p then add(stripped) end
+
+    -- 3) strip "workspace/" atau "Workspace/"
+    local noWs = stripped:gsub("^[Ww]orkspace/", "")
+    if noWs ~= stripped then
+        add(noWs)
+        add("./" .. noWs)
     end
 
-    -- strip prefix "./workspace/"
-    local stripped2 = p:match("^%.?/?[Ww]orkspace/(.+)$")
-    if stripped2 then
-        add(stripped2)
-        add("./" .. stripped2)
+    -- 4) strip prefix absolut: cari "/Workspace/" terakhir, ambil suffix
+    local lower = string.lower(p)
+    local wsPos = lower:find("/workspace/", 1, true)
+    if wsPos then
+        local rel = string.sub(p, wsPos + 11)
+        add(rel)
+        add("./" .. rel)
+        add("workspace/" .. rel)
+        add("Workspace/" .. rel)
     end
 
-    -- coba tanpa folder apa pun (basename saja)
+    -- 5) basename saja
     local base = p:match("([^/\\]+)$")
-    if base and base ~= p and base ~= "" then
+    if base and base ~= p then
         add(base)
         add("./" .. base)
     end
 
-    -- prefix workspace kalau belum
-    if not p:match("^[Ww]orkspace/") and not p:match("^%.?/") and not p:match("^/") then
-        add("workspace/" .. p)
-        add("Workspace/" .. p)
+    -- 6) tambah "./" dan "workspace/" prefix jika belum ada
+    local count = #list
+    for i = 1, count do
+        local v = list[i]
+        if not v:match("^%.?/") and not v:match("^[Ww]orkspace/") and not v:match("^/") then
+            add("./" .. v)
+            add("workspace/" .. v)
+            add("Workspace/" .. v)
+        end
     end
 
     return list
@@ -140,41 +144,18 @@ end
 
 local fileCache = {}
 
+-- FIX KRITIS: prioritaskan getcustomasset untuk verifikasi.
+-- Alasan: getcustomasset adalah API yang benar-benar dipakai untuk load.
+-- Banyak executor menganggap isfile=true untuk path yang tidak diterima getcustomasset.
 local function findFile(path, silent)
     if type(path) ~= "string" or path == "" then return nil end
 
-    -- cache hit
     local cached = fileCache[path]
-    if cached then
-        if cached == true then return path end
-        return cached
-    end
+    if cached and cached ~= false then return cached end
 
     local variants = fileVariants(path)
 
-    -- 1) isfile (paling cepat)
-    if isfileAPI then
-        for _, v in ipairs(variants) do
-            local ok, res = pcall(isfileAPI, v)
-            if ok and res then
-                fileCache[path] = v
-                return v
-            end
-        end
-    end
-
-    -- 2) readfile (verifikasi isi > 0)
-    if readfileAPI then
-        for _, v in ipairs(variants) do
-            local ok, data = pcall(readfileAPI, v)
-            if ok and type(data) == "string" and #data > 0 then
-                fileCache[path] = v
-                return v
-            end
-        end
-    end
-
-    -- 3) getcustomasset (executor bisa memuatnya)
+    -- 1) PRIORITAS: getcustomasset (yang akan benar-benar dipakai)
     if getcustomassetAPI then
         for _, v in ipairs(variants) do
             local ok, url = pcall(getcustomassetAPI, v)
@@ -185,23 +166,34 @@ local function findFile(path, silent)
         end
     end
 
-    fileCache[path] = nil
-    if not silent then
-        warn("[Punakawan] File tidak dapat di-resolve:", path)
+    -- 2) Fallback: isfile
+    if isfileAPI then
         for _, v in ipairs(variants) do
-            local okI, resI = isfileAPI and pcall(isfileAPI, v) or { false, "no API" }
-            local okR, resR = readfileAPI and pcall(readfileAPI, v) or { false, "no API" }
-            local okC, resC = getcustomassetAPI and pcall(getcustomassetAPI, v) or { false, "no API" }
-            warn(string.format("  tried=%q isfile=%s readfile=%s getcustomasset=%s",
-                v, tostring(okI and resI), okR and type(resR) == "string" and ("#" .. #resR) or tostring(resR),
-                tostring(okC and resC)))
+            local ok, res = pcall(isfileAPI, v)
+            if ok and res == true then
+                fileCache[path] = v
+                return v
+            end
         end
     end
-    return nil
-end
 
-local function pathExists(path)
-    return findFile(path, true) ~= nil
+    -- 3) Fallback: readfile (isi > 0)
+    if readfileAPI then
+        for _, v in ipairs(variants) do
+            local ok, data = pcall(readfileAPI, v)
+            if ok and type(data) == "string" and #data > 0 then
+                fileCache[path] = v
+                return v
+            end
+        end
+    end
+
+    fileCache[path] = false
+    if not silent then
+        warn("[Punakawan] File NOT RESOLVABLE:", path)
+        for i, v in ipairs(variants) do warn(string.format("  [%d] %q", i, v)) end
+    end
+    return nil
 end
 
 local function folderExists(path)
@@ -224,10 +216,10 @@ local function resolveImage(file, assetId)
     return nil
 end
 
--- coba dua nama BG (karena mungkin typo)
 local logoImage = resolveImage(LOGO_FILE, LOGO_ASSET_ID)
-local bgImage = resolveImage(BG_FILE, BG_ASSET_ID) or resolveImage("punakawan_bg.png", "")
-                                   or resolveImage("punawakan_bg.png", "")
+local bgImage = resolveImage(BG_FILE, BG_ASSET_ID)
+    or resolveImage("punakawan_bg.png", "")
+    or resolveImage("punawakan_bg.png", "")
 
 --========================= PARSER =============================
 local RbxParser
@@ -236,18 +228,15 @@ do
 RbxParser = {}
 RbxParser.yield = function() end
 local sbyte, ssub, schar = string.byte, string.sub, string.char
-
 local function u32(s, p)
     local a, b, c, d = sbyte(s, p, p + 3)
     return a + b * 256 + c * 65536 + d * 16777216
 end
-
 local yc = 0
 local function tick(n)
     yc = yc + n
     if yc > 400000 then yc = 0; RbxParser.yield() end
 end
-
 local function lz4Decompress(src)
     local out, n = {}, 0
     local i, len = 1, #src
@@ -278,7 +267,6 @@ local function lz4Decompress(src)
     end
     return table.concat(parts)
 end
-
 local function readIntArray(data, pos, count)
     local arr = {}
     for i = 0, count - 1 do
@@ -292,17 +280,14 @@ local function readIntArray(data, pos, count)
     tick(count * 4)
     return arr, pos + count * 4
 end
-
 local function accumulate(arr)
     for i = 2, #arr do arr[i] = arr[i] + arr[i - 1] end
     return arr
 end
-
 local function readString(data, pos)
     local l = u32(data, pos)
     return ssub(data, pos + 4, pos + 3 + l), pos + 4 + l
 end
-
 function RbxParser.parseBinary(data)
     if ssub(data, 1, 8) ~= "<roblox!" then return nil, "bukan biner RBXM" end
     local classes, inst, roots = {}, {}, {}
@@ -318,20 +303,19 @@ function RbxParser.parseBinary(data)
             pos = start + unc
         else
             local raw = ssub(data, start, start + comp - 1)
+            -- Deteksi ZSTD
             if ssub(raw, 1, 4) == "\40\181\47\253" then
-                return nil, "kompresi ZSTD belum didukung"
+                return nil, "ZSTD_COMPRESSED"
             end
             chunk = lz4Decompress(raw)
             pos = start + comp
         end
-
         if cname == "INST" then
             local classId = u32(chunk, 1)
             local className, p = readString(chunk, 5)
             p = p + 1
             local count = u32(chunk, p); p = p + 4
-            local refs = readIntArray(chunk, p, count)
-            accumulate(refs)
+            local refs = readIntArray(chunk, p, count); accumulate(refs)
             classes[classId] = { name = className, refs = refs }
             for _, ref in ipairs(refs) do
                 inst[ref] = { class = className, name = className, children = {} }
@@ -375,12 +359,10 @@ function RbxParser.parseBinary(data)
     end
     return roots
 end
-
 local function unescapeXml(s)
     s = s:gsub("&#(%d+);", function(n) return utf8.char(tonumber(n)) end)
     return (s:gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&quot;", '"'):gsub("&apos;", "'"):gsub("&amp;", "&"))
 end
-
 local function xmlContent(raw)
     if string.find(raw, "<![CDATA[", 1, true) then
         local parts = {}
@@ -389,7 +371,6 @@ local function xmlContent(raw)
     end
     return unescapeXml(raw)
 end
-
 function RbxParser.parseXml(xml)
     local roots, stack = {}, {}
     local pos, len = 1, #xml
@@ -400,11 +381,9 @@ function RbxParser.parseXml(xml)
         steps = steps + 1
         if steps % 20000 == 0 then RbxParser.yield() end
         if ssub(xml, lt, lt + 3) == "<!--" then
-            local e = string.find(xml, "-->", lt, true)
-            pos = (e or len) + 3
+            local e = string.find(xml, "-->", lt, true); pos = (e or len) + 3
         elseif ssub(xml, lt, lt + 8) == "<![CDATA[" then
-            local e = string.find(xml, "]]>", lt, true)
-            pos = (e or len) + 3
+            local e = string.find(xml, "]]>", lt, true); pos = (e or len) + 3
         else
             local gt = string.find(xml, ">", lt, true)
             if not gt then break end
@@ -444,14 +423,12 @@ function RbxParser.parseXml(xml)
     end
     return roots
 end
-
 function RbxParser.parse(data)
     if type(data) ~= "string" or #data < 16 then return nil, "isi kosong" end
     if ssub(data, 1, 8) == "<roblox!" then return RbxParser.parseBinary(data) end
     if string.find(ssub(data, 1, 200), "<roblox", 1, true) then return RbxParser.parseXml(data) end
     return nil, "format tidak dikenali"
 end
-
 function RbxParser.countScripts(nodes)
     local n = 0
     for _, node in ipairs(nodes) do
@@ -460,7 +437,6 @@ function RbxParser.countScripts(nodes)
     end
     return n
 end
-
 local function matchLevel(liveList, parsedList, cb, path)
     local groups = {}
     for _, p in ipairs(parsedList) do
@@ -483,7 +459,6 @@ local function matchLevel(liveList, parsedList, cb, path)
         end
     end
 end
-
 function RbxParser.match(liveRoots, parsedRoots, cb)
     local live = {}
     for _, o in ipairs(liveRoots) do
@@ -508,7 +483,6 @@ function RbxParser.match(liveRoots, parsedRoots, cb)
 end
 --@@PARSER_END
 end
-
 RbxParser.yield = function() task.wait() end
 
 --========================= THEME ==============================
@@ -523,10 +497,8 @@ local THEME = {
     muted = Color3.fromRGB(150, 150, 176),
     scrim = Color3.fromRGB(6, 6, 10),
 }
-
 local panelTransparency = bgImage and 0.35 or 0.7
 
---========================= RGB GRADIENT =======================
 local rgbGradients = {}
 local function buildRainbow(shift)
     local kp = {}
@@ -537,10 +509,8 @@ local function buildRainbow(shift)
 end
 local function addRGB(parent)
     local g = Instance.new("UIGradient")
-    g.Color = buildRainbow(0)
-    g.Parent = parent
-    table.insert(rgbGradients, g)
-    return g
+    g.Color = buildRainbow(0); g.Parent = parent
+    table.insert(rgbGradients, g); return g
 end
 local function rgbStroke(inst, thickness, transparency)
     local s = Instance.new("UIStroke")
@@ -549,8 +519,7 @@ local function rgbStroke(inst, thickness, transparency)
     s.Thickness = thickness or 1.5
     s.Transparency = transparency or 0
     s.Parent = inst
-    addRGB(s)
-    return s
+    addRGB(s); return s
 end
 
 --========================= GUI BASE ===========================
@@ -566,7 +535,6 @@ if gethuiAPI then
     local ok, hui = pcall(gethuiAPI)
     if ok and typeof(hui) == "Instance" then guiParent = hui end
 end
-
 for _, container in ipairs({ PlayerGui, guiParent }) do
     local old = container:FindFirstChild("PunawakanCommunityImporter")
     if old then old:Destroy() end
@@ -577,7 +545,6 @@ for _, name in ipairs({ "PunawakanMusic", "PunawakanAudio", "PunawakanOut", "Pun
 end
 
 local connections = {}
-
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "PunawakanCommunityImporter"
 ScreenGui.ResetOnSpawn = false
@@ -587,12 +554,9 @@ ScreenGui.Parent = guiParent
 
 local function corner(inst, r)
     local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, r or 6)
-    c.Parent = inst
-    return c
+    c.CornerRadius = UDim.new(0, r or 6); c.Parent = inst; return c
 end
 
--- Open button
 local OpenButton = Instance.new("TextButton")
 OpenButton.Name = "OpenButton"
 OpenButton.Size = UDim2.fromOffset(54, 54)
@@ -602,8 +566,7 @@ OpenButton.BackgroundColor3 = THEME.bg
 OpenButton.BackgroundTransparency = 0.3
 OpenButton.Text = ""
 OpenButton.Parent = ScreenGui
-corner(OpenButton, 12)
-rgbStroke(OpenButton, 2, 0.1)
+corner(OpenButton, 12); rgbStroke(OpenButton, 2, 0.1)
 
 if logoImage then
     local logo = Instance.new("ImageLabel")
@@ -631,12 +594,10 @@ Main.BackgroundTransparency = bgImage and 1 or 0.6
 Main.BorderSizePixel = 0
 Main.Visible = false
 Main.Parent = ScreenGui
-corner(Main, 14)
-rgbStroke(Main, 2.5, 0)
+corner(Main, 14); rgbStroke(Main, 2.5, 0)
 
 local sizeLimit = Instance.new("UISizeConstraint")
-sizeLimit.MinSize = GUI_MIN
-sizeLimit.MaxSize = GUI_MAX
+sizeLimit.MinSize = GUI_MIN; sizeLimit.MaxSize = GUI_MAX
 sizeLimit.Parent = Main
 
 if bgImage then
@@ -649,7 +610,6 @@ if bgImage then
     bg.ZIndex = 0
     bg.Parent = Main
     corner(bg, 14)
-
     local scrim = Instance.new("Frame")
     scrim.Size = UDim2.fromScale(1, 1)
     scrim.BackgroundColor3 = THEME.scrim
@@ -744,7 +704,6 @@ for i, def in ipairs(TAB_DEFS) do
     button.TextColor3 = THEME.muted
     button.ZIndex = 3
     button.Parent = TabBar
-
     local line = Instance.new("Frame")
     line.Size = UDim2.new(1, 0, 0, 2)
     line.Position = UDim2.new(0, 0, 1, -2)
@@ -754,7 +713,6 @@ for i, def in ipairs(TAB_DEFS) do
     line.ZIndex = 3
     line.Parent = button
     addRGB(line)
-
     tabButtons[key] = button
     tabLines[key] = line
     button.Activated:Connect(function() switchTab(key) end)
@@ -785,29 +743,22 @@ local function setStatus(text) Status.Text = tostring(text) end
 
 local function newPage(key)
     local f = Instance.new("Frame")
-    f.Name = key
-    f.BackgroundTransparency = 1
+    f.Name = key; f.BackgroundTransparency = 1
     f.Size = UDim2.fromScale(1, 1)
-    f.Visible = false
-    f.ZIndex = 2
+    f.Visible = false; f.ZIndex = 2
     f.Parent = PagesHolder
-    pages[key] = f
-    return f
+    pages[key] = f; return f
 end
 
 local function makeButton(parent, text, pos, size, primary)
     local b = Instance.new("TextButton")
-    b.Position = pos
-    b.Size = size
+    b.Position = pos; b.Size = size
     b.AutoButtonColor = true
     b.BackgroundColor3 = THEME.button
     b.BackgroundTransparency = math.max(panelTransparency - 0.1, 0)
-    b.Text = text
-    b.TextColor3 = THEME.text
-    b.TextSize = 12
-    b.Font = Enum.Font.GothamBold
-    b.ZIndex = 3
-    b.Parent = parent
+    b.Text = text; b.TextColor3 = THEME.text
+    b.TextSize = 12; b.Font = Enum.Font.GothamBold
+    b.ZIndex = 3; b.Parent = parent
     corner(b, 8)
     rgbStroke(b, 1.5, primary and 0.1 or 0.4)
     return b
@@ -815,22 +766,17 @@ end
 
 local function makeBox(parent, placeholder, pos, size)
     local box = Instance.new("TextBox")
-    box.Position = pos
-    box.Size = size
+    box.Position = pos; box.Size = size
     box.BackgroundColor3 = THEME.panel
     box.BackgroundTransparency = math.max(panelTransparency - 0.05, 0.15)
     box.TextColor3 = THEME.text
     box.PlaceholderColor3 = THEME.muted
     box.PlaceholderText = placeholder
-    box.Text = ""
-    box.ClearTextOnFocus = false
-    box.TextSize = 13
-    box.Font = Enum.Font.Gotham
+    box.Text = ""; box.ClearTextOnFocus = false
+    box.TextSize = 13; box.Font = Enum.Font.Gotham
     box.TextXAlignment = Enum.TextXAlignment.Left
-    box.ZIndex = 3
-    box.Parent = parent
-    corner(box, 8)
-    rgbStroke(box, 1, 0.5)
+    box.ZIndex = 3; box.Parent = parent
+    corner(box, 8); rgbStroke(box, 1, 0.5)
     local pad = Instance.new("UIPadding")
     pad.PaddingLeft = UDim.new(0, 10)
     pad.PaddingRight = UDim.new(0, 10)
@@ -843,22 +789,17 @@ local function newList(parent, pos, size, onSelect)
     frame.Position = pos; frame.Size = size
     frame.BackgroundColor3 = THEME.panel
     frame.BackgroundTransparency = math.max(panelTransparency - 0.05, 0.1)
-    frame.BorderSizePixel = 0
-    frame.ScrollBarThickness = 4
-    frame.CanvasSize = UDim2.new()
-    frame.ZIndex = 3
+    frame.BorderSizePixel = 0; frame.ScrollBarThickness = 4
+    frame.CanvasSize = UDim2.new(); frame.ZIndex = 3
     frame.Parent = parent
-    corner(frame, 8)
-    rgbStroke(frame, 1, 0.5)
+    corner(frame, 8); rgbStroke(frame, 1, 0.5)
     local layout = Instance.new("UIListLayout")
     layout.Padding = UDim.new(0, 5)
     layout.SortOrder = Enum.SortOrder.LayoutOrder
     layout.Parent = frame
     local padding = Instance.new("UIPadding")
-    padding.PaddingTop = UDim.new(0, 6)
-    padding.PaddingBottom = UDim.new(0, 6)
-    padding.PaddingLeft = UDim.new(0, 6)
-    padding.PaddingRight = UDim.new(0, 6)
+    padding.PaddingTop = UDim.new(0, 6); padding.PaddingBottom = UDim.new(0, 6)
+    padding.PaddingLeft = UDim.new(0, 6); padding.PaddingRight = UDim.new(0, 6)
     padding.Parent = frame
     layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
         frame.CanvasSize = UDim2.fromOffset(0, layout.AbsoluteContentSize.Y + 12)
@@ -876,15 +817,13 @@ local function newList(parent, pos, size, onSelect)
         button.AutoButtonColor = false
         button.BackgroundColor3 = THEME.item
         button.BackgroundTransparency = 0.45
-        button.TextColor3 = THEME.text
-        button.TextSize = 11
+        button.TextColor3 = THEME.text; button.TextSize = 11
         button.Font = Enum.Font.Gotham
         button.TextWrapped = true
         button.TextXAlignment = Enum.TextXAlignment.Left
         button.Text = "  " .. entry.text
         button.ZIndex = 4
-        applyTextShadow(button)
-        button.Parent = frame
+        applyTextShadow(button); button.Parent = frame
         corner(button, 7)
         table.insert(ctl.buttons, button)
         local function choose()
@@ -909,13 +848,10 @@ local function newGrid(parent, pos, size, onSelect, onNearEnd)
     frame.Position = pos; frame.Size = size
     frame.BackgroundColor3 = THEME.panel
     frame.BackgroundTransparency = math.max(panelTransparency - 0.05, 0.1)
-    frame.BorderSizePixel = 0
-    frame.ScrollBarThickness = 4
-    frame.CanvasSize = UDim2.new()
-    frame.ZIndex = 3
+    frame.BorderSizePixel = 0; frame.ScrollBarThickness = 4
+    frame.CanvasSize = UDim2.new(); frame.ZIndex = 3
     frame.Parent = parent
-    corner(frame, 8)
-    rgbStroke(frame, 1, 0.5)
+    corner(frame, 8); rgbStroke(frame, 1, 0.5)
     local grid = Instance.new("UIGridLayout")
     grid.CellSize = UDim2.new(0.3, 0, 0, 128)
     grid.CellPadding = UDim2.fromOffset(6, 6)
@@ -923,10 +859,8 @@ local function newGrid(parent, pos, size, onSelect, onNearEnd)
     grid.SortOrder = Enum.SortOrder.LayoutOrder
     grid.Parent = frame
     local padding = Instance.new("UIPadding")
-    padding.PaddingTop = UDim.new(0, 6)
-    padding.PaddingBottom = UDim.new(0, 6)
-    padding.PaddingLeft = UDim.new(0, 4)
-    padding.PaddingRight = UDim.new(0, 4)
+    padding.PaddingTop = UDim.new(0, 6); padding.PaddingBottom = UDim.new(0, 6)
+    padding.PaddingLeft = UDim.new(0, 4); padding.PaddingRight = UDim.new(0, 4)
     padding.Parent = frame
     grid:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
         frame.CanvasSize = UDim2.fromOffset(0, grid.AbsoluteContentSize.Y + 12)
@@ -939,41 +873,35 @@ local function newGrid(parent, pos, size, onSelect, onNearEnd)
     end
     function ctl.add(entry)
         local button = Instance.new("TextButton")
-        button.Text = ""
-        button.AutoButtonColor = false
+        button.Text = ""; button.AutoButtonColor = false
         button.BackgroundColor3 = THEME.item
         button.BackgroundTransparency = 0.25
         button.LayoutOrder = #ctl.cells + 1
-        button.ZIndex = 4
-        button.Parent = frame
+        button.ZIndex = 4; button.Parent = frame
         corner(button, 8)
         local stroke = Instance.new("UIStroke")
         stroke.Thickness = 2
         stroke.Color = Color3.fromRGB(150, 120, 255)
-        stroke.Transparency = 1
-        stroke.Parent = button
+        stroke.Transparency = 1; stroke.Parent = button
         local img = Instance.new("ImageLabel")
         img.BackgroundTransparency = 1
         img.Position = UDim2.fromOffset(4, 4)
         img.Size = UDim2.new(1, -8, 1, -40)
         img.ScaleType = Enum.ScaleType.Fit
         img.Image = entry.thumb or ""
-        img.ZIndex = 5
-        img.Parent = button
+        img.ZIndex = 5; img.Parent = button
         corner(img, 6)
         local label = Instance.new("TextLabel")
         label.BackgroundTransparency = 1
         label.Position = UDim2.new(0, 4, 1, -34)
         label.Size = UDim2.new(1, -8, 0, 32)
         label.Text = entry.text
-        label.TextColor3 = THEME.text
-        label.TextSize = 10
+        label.TextColor3 = THEME.text; label.TextSize = 10
         label.Font = Enum.Font.Gotham
         label.TextWrapped = true
         label.TextTruncate = Enum.TextTruncate.AtEnd
         label.TextYAlignment = Enum.TextYAlignment.Top
-        label.ZIndex = 5
-        label.Parent = button
+        label.ZIndex = 5; label.Parent = button
         applyTextShadow(label)
         local cell = { button = button, stroke = stroke, img = img }
         table.insert(ctl.cells, cell)
@@ -1000,7 +928,6 @@ local function newGrid(parent, pos, size, onSelect, onNearEnd)
     return ctl
 end
 
---=============== RGB animation & drag =========================
 table.insert(connections, RunService.RenderStepped:Connect(function()
     local seq = buildRainbow((os.clock() * RGB_SPEED) % 1)
     for i = #rgbGradients, 1, -1 do
@@ -1014,9 +941,7 @@ do
     Header.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1
             or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = Main.Position
+            dragging = true; dragStart = input.Position; startPos = Main.Position
             input.Changed:Connect(function()
                 if input.UserInputState == Enum.UserInputState.End then dragging = false end
             end)
@@ -1032,9 +957,8 @@ do
     end))
 end
 
---=============== SPAWN PLACEMENT ==============================
+--======================= SPAWN PLACEMENT ======================
 local importedModels = {}
-
 local function collectSpawns()
     local t = {}
     for _, d in ipairs(workspace:GetDescendants()) do
@@ -1042,7 +966,6 @@ local function collectSpawns()
     end
     return t
 end
-
 local function placeAtSpawn(model)
     local spawns = collectSpawns()
     local sp = SPAWN_POSITION
@@ -1080,14 +1003,13 @@ local function placeAtSpawn(model)
     model:PivotTo(model:GetPivot() + d)
 end
 
---=============== IMPORT OBJECTS ===============================
+--======================= IMPORT OBJECTS =======================
 local SERVICE_NAMES = {
     Lighting = true, ServerScriptService = true, ServerStorage = true,
     ReplicatedStorage = true, ReplicatedFirst = true, StarterGui = true,
     StarterPack = true, StarterPlayer = true, SoundService = true,
     Teams = true, Chat = true, TextChatService = true, MaterialService = true,
 }
-
 local function mergeIntoLocalService(serviceObj, report)
     local okS, realS = pcall(function() return game:GetService(serviceObj.ClassName) end)
     local children = serviceObj:GetChildren()
@@ -1101,7 +1023,6 @@ local function mergeIntoLocalService(serviceObj, report)
         else report.failed += 1 end
     end
 end
-
 local function collectImportables(objects, report)
     local list = {}
     for _, obj in ipairs(objects) do
@@ -1121,7 +1042,6 @@ local function collectImportables(objects, report)
     end
     return list
 end
-
 local function wrapObjects(items, name, report)
     local container = Instance.new("Model")
     container.Name = name
@@ -1137,7 +1057,6 @@ local function wrapObjects(items, name, report)
     end
     return container
 end
-
 local function importObjects(objects, isPlace, baseName)
     local report = { services = 0, failed = 0, gui = 0 }
     local items = collectImportables(objects, report)
@@ -1153,10 +1072,10 @@ local function importObjects(objects, isPlace, baseName)
         if not ok then placeNote = " | gagal posisi: " .. tostring(err) end
     elseif target then target:Destroy() end
     if placed == 0 and report.services == 0 and report.gui == 0 then
-        return false, "Tidak ada objek yang bisa dimasukkan dari file."
+        return false, "Tidak ada objek."
     end
     local parts = {}
-    if placed > 0 then parts[#parts + 1] = placed .. " objek di spawn" end
+    if placed > 0 then parts[#parts + 1] = placed .. " objek" end
     if report.services > 0 then parts[#parts + 1] = report.services .. " ke service" end
     if report.gui > 0 then parts[#parts + 1] = report.gui .. " GUI" end
     local msg = "BERHASIL: " .. table.concat(parts, ", ") .. "."
@@ -1164,10 +1083,9 @@ local function importObjects(objects, isPlace, baseName)
     return true, msg .. placeNote
 end
 
---=============== FILE SCANNER =================================
+--======================= FILE SCANNER =========================
 local modelFiles, audioFiles = {}, {}
 local scanning = false
-
 local function scanDirectory(folderPath, depth, visited, counter)
     if depth > MAX_DEPTH or not listfilesAPI then return end
     folderPath = normalizePath(folderPath)
@@ -1190,33 +1108,26 @@ local function scanDirectory(folderPath, depth, visited, counter)
     end
 end
 
---=============== MODEL PAGE ===================================
+--======================= MODEL PAGE ===========================
 local ModelPage = newPage("model")
 local ModelSearch = makeBox(ModelPage, "Cari file RBXM / RBXL...", UDim2.fromOffset(0, 0), UDim2.new(1, 0, 0, 32))
 local ModelScan = makeButton(ModelPage, "SCAN FILE", UDim2.fromOffset(0, 38), UDim2.new(1 / 3, -3, 0, 32), true)
 local ModelFilter = makeButton(ModelPage, "FILTER: ALL", UDim2.new(1 / 3, 1, 0, 38), UDim2.new(1 / 3, -2, 0, 32))
 local ModelRun = makeButton(ModelPage, "RUN: ON", UDim2.new(2 / 3, 3, 0, 38), UDim2.new(1 / 3, -3, 0, 32))
-
 local runScriptsEnabled = RUN_SCRIPTS_DEFAULT
-local function refreshRunButton()
-    ModelRun.Text = "RUN: " .. (runScriptsEnabled and "ON" or "OFF")
-end
+local function refreshRunButton() ModelRun.Text = "RUN: " .. (runScriptsEnabled and "ON" or "OFF") end
 ModelRun.Activated:Connect(function()
     runScriptsEnabled = not runScriptsEnabled
     refreshRunButton()
-    setStatus(runScriptsEnabled and "RUN ON: script akan dijalankan otomatis." or "RUN OFF.")
+    setStatus(runScriptsEnabled and "RUN ON." or "RUN OFF.")
 end)
 refreshRunButton()
-
 local modelList = newList(ModelPage, UDim2.fromOffset(0, 76), UDim2.new(1, 0, 1, -122), function(e)
     setStatus("Dipilih: " .. e.value)
 end)
-
 local ModelImport = makeButton(ModelPage, "IMPORT FILE TERPILIH", UDim2.new(0, 0, 1, -38), UDim2.new(1, 0, 0, 38), true)
-
 local MODEL_FILTERS = { "ALL", "RBXM", "RBXMX", "RBXL", "RBXLX" }
 local modelFilterIndex = 1
-
 local function renderModels()
     local q = string.lower(ModelSearch.Text)
     local mode = MODEL_FILTERS[modelFilterIndex]
@@ -1234,16 +1145,14 @@ local function renderModels()
     return #entries
 end
 
---=============== MUSIC PAGE ===================================
+--======================= MUSIC PAGE ===========================
 local MusicPage = newPage("music")
 local MusicSearch = makeBox(MusicPage, "Cari lagu...", UDim2.fromOffset(0, 0), UDim2.new(1, 0, 0, 32))
 local MusicScan = makeButton(MusicPage, "SCAN LAGU", UDim2.fromOffset(0, 38), UDim2.new(0.5, -3, 0, 32), true)
 local LoopButton = makeButton(MusicPage, "LOOP: OFF", UDim2.new(0.5, 3, 0, 38), UDim2.new(0.5, -3, 0, 32))
-
 local songList = newList(MusicPage, UDim2.fromOffset(0, 76), UDim2.new(1, 0, 1, -156), function(e)
     setStatus("Lagu dipilih: " .. e.value)
 end)
-
 local PlayButton = makeButton(MusicPage, "PLAY", UDim2.new(0, 0, 1, -74), UDim2.new(0.5, -3, 0, 34), true)
 local StopButton = makeButton(MusicPage, "STOP", UDim2.new(0.5, 3, 1, -74), UDim2.new(0.5, -3, 0, 34))
 local VolDown = makeButton(MusicPage, "VOL -", UDim2.new(0, 0, 1, -34), UDim2.new(0.3, -4, 0, 34))
@@ -1260,7 +1169,6 @@ VolLabel.Parent = MusicPage
 local VolUp = makeButton(MusicPage, "VOL +", UDim2.new(0.7, 4, 1, -34), UDim2.new(0.3, -4, 0, 34))
 
 local Audio = { kind = nil, obj = nil, extra = {}, volume = 0.5, looped = false, path = nil, busy = false }
-
 local function renderSongs()
     local q = string.lower(MusicSearch.Text)
     local paths = {}
@@ -1273,7 +1181,6 @@ local function renderSongs()
     songList.set(entries)
     return #entries
 end
-
 local function refreshVolume() VolLabel.Text = "VOLUME " .. math.floor(Audio.volume * 100 + 0.5) .. "%" end
 local function audioIsPlaying()
     if not Audio.obj then return false end
@@ -1296,7 +1203,6 @@ local function clearAudio()
     for _, o in ipairs(Audio.extra) do pcall(function() o:Destroy() end) end
     Audio.obj = nil; Audio.extra = {}; Audio.kind = nil
 end
-
 local function trySound(url)
     local s = Instance.new("Sound")
     s.Name = "PunawakanMusic"; s.Volume = Audio.volume; s.Looped = Audio.looped
@@ -1304,14 +1210,12 @@ local function trySound(url)
     local t0 = os.clock()
     while os.clock() - t0 < 8 and not (s.IsLoaded and s.TimeLength > 0) do task.wait(0.1) end
     if not (s.IsLoaded and s.TimeLength > 0) then
-        local info = "IsLoaded=" .. tostring(s.IsLoaded) .. " TL=" .. tostring(s.TimeLength)
-        s:Destroy(); return false, info
+        s:Destroy(); return false, "tidak termuat"
     end
     s:Play(); task.wait(0.5)
     if s.IsPlaying then Audio.obj = s; Audio.kind = "sound"; return true end
     s:Destroy(); return false, "tidak berbunyi"
 end
-
 local function tryAudioPlayer(url)
     local created = {}
     local ok, err = pcall(function()
@@ -1344,7 +1248,6 @@ local function tryAudioPlayer(url)
     end
     destroy(); return false, "tidak berbunyi"
 end
-
 local function loadAndPlay(path)
     if Audio.busy or not getcustomassetAPI then
         setStatus("ERROR: getcustomasset tidak tersedia"); return
@@ -1367,12 +1270,11 @@ local function loadAndPlay(path)
         Audio.path = path; applyAudioSettings()
         setStatus("Memutar: " .. baseNameOf(path) .. " (" .. tostring(Audio.kind) .. ")")
     else
-        setStatus("GAGAL memutar. " .. (reasons[1] or ""))
+        setStatus("GAGAL memutar.")
         for _, r in ipairs(reasons) do warn("[Punakawan] " .. r) end
     end
     Audio.busy = false
 end
-
 PlayButton.Activated:Connect(function()
     if Audio.busy then return end
     local s = songList.selected
@@ -1409,7 +1311,9 @@ task.spawn(function()
     end
 end)
 
---=============== TOOLBOX PAGE =================================
+--======================= TOOLBOX PAGE =========================
+-- FIX LAG: thumbnail download di-queue, satu per satu dengan wait.
+-- Gak ada lagi 30 spawn paralel yang blocking.
 local ToolboxPage = newPage("toolbox")
 local ToolboxSearch = makeBox(ToolboxPage, "Cari model atau tempel Asset ID...", UDim2.fromOffset(0, 0), UDim2.new(1, 0, 0, 32))
 local ToolboxGo = makeButton(ToolboxPage, "CARI", UDim2.fromOffset(0, 38), UDim2.new(0.5, -3, 0, 32), true)
@@ -1418,24 +1322,25 @@ local ToolboxImport = makeButton(ToolboxPage, "IMPORT MODEL TERPILIH", UDim2.new
 
 local tbKeyword, tbPage, tbBusy, tbEnd, tbStarted = "", 0, false, false, false
 local runToolboxSearch
-
 local toolboxList = newGrid(ToolboxPage, UDim2.fromOffset(0, 76), UDim2.new(1, 0, 1, -122), function(e)
     setStatus("Dipilih: " .. e.text .. " [" .. tostring(e.value) .. "]")
 end, function() runToolboxSearch(true) end)
 
 local function httpBody(url)
-    if requestAPI then
-        local ok, res = pcall(requestAPI, { Url = url, Method = "GET", Headers = { ["Accept"] = "*/*" } })
-        if ok and type(res) == "table" then
-            local code = res.StatusCode or res.status_code
-            local body = res.Body or res.body
-            local succ = res.Success
-            if succ == nil then succ = (type(code) ~= "number") or code < 400 end
-            if succ and type(body) == "string" and body ~= "" then return body end
-        end
-    end
+    -- HttpGet YIELDS - gunakan untuk download besar agar UI tetap responsif
     local ok, body = pcall(function() return game:HttpGet(url) end)
     if ok and type(body) == "string" and body ~= "" then return body end
+    -- Fallback request (mungkin tidak yielding)
+    if requestAPI then
+        local ok2, res = pcall(requestAPI, { Url = url, Method = "GET", Headers = { ["Accept"] = "*/*" } })
+        if ok2 and type(res) == "table" then
+            local code = res.StatusCode or res.status_code
+            local b = res.Body or res.body
+            local succ = res.Success
+            if succ == nil then succ = (type(code) ~= "number") or code < 400 end
+            if succ and type(b) == "string" and b ~= "" then return b end
+        end
+    end
     return nil
 end
 
@@ -1456,7 +1361,6 @@ local function httpJson(path)
     return nil, "server toolbox tidak bisa dijangkau"
 end
 
--- Ambil URL thumbnails (HTTPS) untuk sekumpulan ID
 local function fetchThumbnailURLs(ids)
     if #ids == 0 then return {} end
     local idList = table.concat(ids, ",")
@@ -1482,12 +1386,10 @@ local function fetchThumbnailURLs(ids)
     return {}
 end
 
--- Fallback icon (model icon Roblox) jika thumbnail gagal
 local MODEL_ICON = "rbxassetid://4458901886"
-
--- Download PNG thumbnail via HTTP, cache, load via getcustomasset
 local THUMB_CACHE = "PunawakanThumbs"
-local thumbnailURLCache = {} -- id -> loadable URL string
+local thumbnailURLCache = {}
+local thumbURLsBatch = {}  -- cache URL thumbnail dari API per-id
 
 local function ensureThumbFolder()
     if makefolderAPI and not folderExists(THUMB_CACHE) then
@@ -1495,47 +1397,63 @@ local function ensureThumbFolder()
     end
 end
 
-local function resolveThumbnail(id)
+-- Resolve 1 thumbnail: cek cache memori -> cache disk -> download baru -> fallback
+local function resolveThumbnail(id, skipHttp)
     id = tonumber(id)
     if not id then return MODEL_ICON end
-
-    -- 1) cache di memori
     if thumbnailURLCache[id] then return thumbnailURLCache[id] end
 
-    -- 2) cache di disk
     if writefileAPI and getcustomassetAPI then
         local cachePath = THUMB_CACHE .. "/" .. id .. ".png"
         local resolved = findFile(cachePath, true)
         if resolved then
             local ok, url = pcall(getcustomassetAPI, resolved)
-            if ok and url then
-                thumbnailURLCache[id] = url
-                return url
-            end
+            if ok and url then thumbnailURLCache[id] = url; return url end
         end
-
-        -- 3) download baru
-        local urls = fetchThumbnailURLs({ id })
-        local httpsURL = urls[id]
-        if httpsURL then
-            local body = httpBody(httpsURL)
-            if body and #body > 500 then
-                ensureThumbFolder()
-                pcall(writefileAPI, cachePath, body)
-                local resolved2 = findFile(cachePath, true)
-                if resolved2 then
-                    local ok2, url2 = pcall(getcustomassetAPI, resolved2)
-                    if ok2 and url2 then
-                        thumbnailURLCache[id] = url2
-                        return url2
+        if not skipHttp then
+            local httpsURL = thumbURLsBatch[id]
+            if not httpsURL then
+                local urls = fetchThumbnailURLs({ id })
+                httpsURL = urls[id]
+                if httpsURL then thumbURLsBatch[id] = httpsURL end
+            end
+            if httpsURL then
+                local body = httpBody(httpsURL)
+                if body and #body > 500 then
+                    ensureThumbFolder()
+                    pcall(writefileAPI, cachePath, body)
+                    local resolved2 = findFile(cachePath, true)
+                    if resolved2 then
+                        local ok2, url2 = pcall(getcustomassetAPI, resolved2)
+                        if ok2 and url2 then thumbnailURLCache[id] = url2; return url2 end
                     end
                 end
             end
         end
     end
-
-    -- 4) fallback rbxthumb
     return "rbxthumb://type=Asset&id=" .. tostring(id) .. "&w=150&h=150"
+end
+
+-- QUEUE thumbnail: satu per satu dengan wait, tidak ada spawn paralel
+local thumbQueue = {}
+local thumbProcessing = false
+local function enqueueThumb(id, imgLabel)
+    table.insert(thumbQueue, { id = id, img = imgLabel })
+    if thumbProcessing then return end
+    thumbProcessing = true
+    task.spawn(function()
+        while #thumbQueue > 0 do
+            local item = table.remove(thumbQueue, 1)
+            if item.img and item.img.Parent then
+                local better = resolveThumbnail(item.id, false)
+                if better and item.img.Parent then
+                    pcall(function() item.img.Image = better end)
+                end
+            end
+            task.wait(0.15)  -- jeda antar download agar UI tetap responsif
+        end
+        thumbProcessing = false
+    end)
 end
 
 local function toolboxSearch(keyword, page)
@@ -1583,6 +1501,14 @@ local function toolboxSearch(keyword, page)
 end
 
 local function addToolboxResults(results)
+    if #results == 0 then return end
+    -- Batch URL fetch sekali (1 HTTP)
+    local ids = {}
+    for _, r in ipairs(results) do ids[#ids + 1] = r.id end
+    local urlMap = fetchThumbnailURLs(ids)
+    for id, url in pairs(urlMap) do thumbURLsBatch[id] = url end
+
+    -- Tambah cell dengan rbxthumb (instan), lalu queue upgrade ke PNG asli
     for _, r in ipairs(results) do
         local initialThumb = "rbxthumb://type=Asset&id=" .. tostring(r.id) .. "&w=150&h=150"
         local choose, cell = toolboxList.add({
@@ -1590,13 +1516,7 @@ local function addToolboxResults(results)
             value = r.id,
             thumb = initialThumb,
         })
-        -- Upgrade ke thumbnail yang sudah di-download (async)
-        task.spawn(function()
-            local better = resolveThumbnail(r.id)
-            if better and cell and cell.img and cell.img.Parent then
-                cell.img.Image = better
-            end
-        end)
+        enqueueThumb(r.id, cell.img)
     end
 end
 
@@ -1617,10 +1537,7 @@ runToolboxSearch = function(append)
                 value = id,
                 thumb = "rbxthumb://type=Asset&id=" .. keyword .. "&w=150&h=150",
             })
-            task.spawn(function()
-                local better = resolveThumbnail(id)
-                if better and cell and cell.img and cell.img.Parent then cell.img.Image = better end
-            end)
+            enqueueThumb(id, cell.img)
             choose()
             return
         end
@@ -1655,17 +1572,15 @@ ToolboxMore.Activated:Connect(function()
     runToolboxSearch(true)
 end)
 ToolboxSearch.FocusLost:Connect(function(enter) if enter then runToolboxSearch(false) end end)
-
 local toolboxOpened = false
 tabButtons.toolbox.Activated:Connect(function()
     if not toolboxOpened then toolboxOpened = true; runToolboxSearch(false) end
 end)
 
---=============== SCRIPT RESTORE ===============================
+--======================= SCRIPT RECOVERY ======================
 local ScriptClasses = { Script = true, LocalScript = true, ModuleScript = true }
 local ScriptRegistry = setmetatable({}, { __mode = "k" })
 local moduleCache = setmetatable({}, { __mode = "k" })
-
 local okEnv, BASE_ENV = pcall(function() return getfenv() end)
 if not okEnv or type(BASE_ENV) ~= "table" then BASE_ENV = _G end
 
@@ -1715,11 +1630,20 @@ local function exportScripts(label, items)
 end
 
 local function restoreScripts(objects, bytes, label)
-    local stats = { inFile = 0, matched = 0, setOK = 0, exported = 0, list = {}, err = nil }
+    local stats = {
+        inFile = 0, matched = 0, setOK = 0, exported = 0,
+        list = {}, err = nil, hint = nil,
+    }
     local okP, r1, r2 = pcall(RbxParser.parse, bytes)
     local parsed, perr
     if okP then parsed, perr = r1, r2 else perr = tostring(r1) end
-    if not parsed then stats.err = perr or "gagal baca"; return stats end
+    if not parsed then
+        stats.err = perr or "gagal baca"
+        if tostring(perr):find("ZSTD") then
+            stats.hint = "file ZSTD-compressed (default Studio baru). Source tidak bisa dibaca. Gunakan 'Save As' format RBXM (bukan ZSTD)."
+        end
+        return stats
+    end
     stats.inFile = RbxParser.countScripts(parsed)
     if stats.inFile == 0 then return stats end
     local exportItems = {}
@@ -1738,11 +1662,18 @@ end
 
 local function describeScripts(stats)
     if not stats then return "" end
-    if stats.err and stats.inFile == 0 then return " | Script: " .. tostring(stats.err) end
-    if stats.inFile == 0 then return " | Tidak ada script di file." end
+    if stats.err then
+        local msg = " | Script tak terbaca: " .. tostring(stats.err)
+        if stats.hint then msg = msg .. " — " .. stats.hint end
+        return msg
+    end
+    if stats.inFile == 0 then return " | Tidak ada script." end
     local msg = " | Script " .. stats.matched .. "/" .. stats.inFile
     if stats.setOK > 0 then msg = msg .. ", " .. stats.setOK .. " terpasang" end
-    if stats.exported > 0 then msg = msg .. ", " .. stats.exported .. " diekspor" end
+    if stats.exported > 0 then msg = msg .. ", " .. stats.exported .. " ke " .. SCRIPT_EXPORT_FOLDER end
+    if stats.setOK < stats.matched then
+        msg = msg .. " | " .. (stats.matched - stats.setOK) .. " setSource GAGAL (buka " .. SCRIPT_EXPORT_FOLDER .. ")"
+    end
     return msg
 end
 
@@ -1787,11 +1718,10 @@ local function runScripts(list)
     return started
 end
 
---=============== LOAD FILE / ASSET ============================
-local function readFileBytes(path)
+--======================= LOAD FILE / ASSET ====================
+local function readFileBytes(resolvedPath)
     if not readfileAPI then return nil end
-    local resolved = findFile(path, true) or path
-    local ok, data = pcall(readfileAPI, resolved)
+    local ok, data = pcall(readfileAPI, resolvedPath)
     if ok and type(data) == "string" and #data > 0 then return data end
     return nil
 end
@@ -1804,18 +1734,19 @@ local function loadFile(path)
     if not getcustomassetAPI then return nil, "getcustomasset tidak tersedia" end
     local resolved = findFile(path)
     if not resolved then
-        warn("[Punakawan] findFile gagal untuk: " .. tostring(path))
-        return nil, "file tidak ditemukan: " .. tostring(path)
+        return nil, "file tidak ditemukan (cek console — path yang dicoba sudah dilog)"
     end
+    print("[Punakawan] Loading: " .. resolved)
     local okA, url = pcall(getcustomassetAPI, resolved)
     if not okA or type(url) ~= "string" or url == "" then
-        return nil, "getcustomasset gagal: " .. tostring(url)
+        return nil, "getcustomasset gagal untuk " .. resolved .. ": " .. tostring(url)
     end
     local objects
     local ok, result = pcall(function() return game:GetObjects(url) end)
     if ok and type(result) == "table" and #result > 0 then objects = result
     else
         local err1 = tostring(result)
+        print("[Punakawan] GetObjects gagal: " .. err1)
         local ok2, single = pcall(function() return InsertService:LoadLocalAsset(url) end)
         if ok2 and typeof(single) == "Instance" then objects = { single }
         else return nil, "GetObjects: " .. err1 .. " | LoadLocalAsset: " .. tostring(single) end
@@ -1826,7 +1757,6 @@ local function loadFile(path)
     return objects, nil, stats
 end
 
--- Multi-endpoint asset fetch untuk toolbox (v1, v2, www, roproxy)
 local ASSET_ENDPOINTS = {
     "https://assetdelivery.roblox.com/v1/asset/?id=",
     "https://assetdelivery.roblox.com/v1/asset?id=",
@@ -1834,7 +1764,6 @@ local ASSET_ENDPOINTS = {
     "https://assetdelivery.roproxy.com/v1/asset/?id=",
     "https://www.roblox.com/asset/?id=",
 }
-
 local function fetchAssetBytes(id)
     for _, base in ipairs(ASSET_ENDPOINTS) do
         local body = httpBody(base .. tostring(id))
@@ -1860,20 +1789,19 @@ local function loadToolboxAsset(id)
     end
     local bytes = fetchAssetBytes(id)
     local stats = bytes and restoreScripts(objects, bytes, "Toolbox_" .. tostring(id))
-        or emptyStats("asset bytes tidak bisa diunduh (mungkin butuh auth)")
+        or emptyStats("file model asli tidak bisa diunduh (perlu auth atau host memblokir)")
     return objects, nil, stats
 end
 
---=============== ACTIONS ======================================
+--======================= ACTIONS ==============================
 local importing = false
-
 local function scanFiles()
     if scanning then return end
     if not listfilesAPI then setStatus("ERROR: listfiles tidak tersedia"); return end
     scanning = true
     ModelScan.Text = "MEMINDAI..."
     MusicScan.Text = "MEMINDAI..."
-    setStatus("Memindai workspace executor...")
+    setStatus("Memindai...")
     table.clear(modelFiles); table.clear(audioFiles); table.clear(fileCache)
     task.spawn(function()
         local visited, counter = {}, { n = 0 }
@@ -1884,12 +1812,11 @@ local function scanFiles()
         for _ in pairs(modelFiles) do mc += 1 end
         for _ in pairs(audioFiles) do ac += 1 end
         print("[Punakawan] Scan: " .. mc .. " model, " .. ac .. " audio")
-        -- Verifikasi resolvability untuk 5 pertama
         local shown = 0
         for path in pairs(modelFiles) do
-            if shown < 5 then
+            if shown < 3 then
                 local resolved = findFile(path, true)
-                print("  " .. path .. " -> " .. (resolved and ("OK: " .. resolved) or "TIDAK RESOLVE"))
+                print("  " .. path .. " -> " .. (resolved and ("OK -> " .. resolved) or "TIDAK RESOLVE"))
                 shown += 1
             end
         end
@@ -1899,7 +1826,6 @@ local function scanFiles()
         scanning = false
     end)
 end
-
 ModelScan.Activated:Connect(scanFiles)
 MusicScan.Activated:Connect(scanFiles)
 ModelSearch:GetPropertyChangedSignal("Text"):Connect(function()
@@ -1918,15 +1844,15 @@ ModelImport.Activated:Connect(function()
     if importing then return end
     local path = modelList.selected
     if not path then setStatus("Pilih file dulu."); return end
-    local resolved = findFile(path)
-    if not resolved then
-        setStatus("ERROR: file tidak ditemukan — lihat console untuk detail path yang dicoba")
-        return
-    end
     importing = true
-    local isPlace = PLACE_EXT[getExtension(path)] == true
-    setStatus(isPlace and "Membaca place..." or "Membaca model...")
+    setStatus("Resolving & membaca " .. baseNameOf(path) .. "...")
     task.spawn(function()
+        local resolved = findFile(path, false)
+        if not resolved then
+            setStatus("ERROR: file tidak ditemukan — lihat console untuk detail")
+            importing = false; return
+        end
+        local isPlace = PLACE_EXT[getExtension(path)] == true
         local objects, err, stats = loadFile(resolved)
         if not objects then
             setStatus("IMPOR GAGAL: " .. tostring(err))
@@ -1937,7 +1863,7 @@ ModelImport.Activated:Connect(function()
                 if runScriptsEnabled then
                     extra = extra .. " | " .. runScripts(stats.list) .. " dijalankan"
                 else
-                    extra = extra .. " | RUN OFF (aktifkan tombol RUN)"
+                    extra = extra .. " | RUN OFF"
                 end
             end
             setStatus(msg .. extra)
@@ -1949,7 +1875,7 @@ end)
 ToolboxImport.Activated:Connect(function()
     if importing then return end
     local id = toolboxList.selected
-    if not id then setStatus("Pilih model Toolbox dulu."); return end
+    if not id then setStatus("Pilih model dulu."); return end
     importing = true
     setStatus("Mengunduh model " .. tostring(id) .. "...")
     task.spawn(function()
@@ -1972,7 +1898,7 @@ ToolboxImport.Activated:Connect(function()
     end)
 end)
 
---=============== WINDOW BUTTONS ===============================
+--======================= WINDOW BUTTONS =======================
 OpenButton.Activated:Connect(function() Main.Visible = not Main.Visible end)
 Minimize.Activated:Connect(function() Main.Visible = false end)
 Close.Activated:Connect(function() clearAudio(); ScreenGui:Destroy() end)
@@ -1980,7 +1906,7 @@ ScreenGui.Destroying:Connect(function()
     for _, c in ipairs(connections) do c:Disconnect() end
 end)
 
---=============== STARTUP ======================================
+--======================= STARTUP ==============================
 for _, d in ipairs(ScreenGui:GetDescendants()) do applyTextShadow(d) end
 refreshVolume()
 switchTab("model")
@@ -1990,7 +1916,7 @@ local missing = {}
 if not listfilesAPI then missing[#missing + 1] = "listfiles" end
 if not isfileAPI then missing[#missing + 1] = "isfile" end
 if not getcustomassetAPI then missing[#missing + 1] = "getcustomasset" end
-if not writefileAPI then missing[#missing + 1] = "writefile (thumbnail tidak bisa di-cache)" end
+if not writefileAPI then missing[#missing + 1] = "writefile" end
 if not readfileAPI then missing[#missing + 1] = "readfile" end
 if #missing > 0 then
     setStatus("API hilang: " .. table.concat(missing, ", "))
@@ -1999,10 +1925,9 @@ else
 end
 
 print("======================================")
-print("PUNAKAWAN IMPORTER v5.2")
+print("PUNAKAWAN IMPORTER v5.3")
 print("listfiles:", listfilesAPI ~= nil, "| isfile:", isfileAPI ~= nil)
 print("readfile:", readfileAPI ~= nil, "| writefile:", writefileAPI ~= nil)
 print("getcustomasset:", getcustomassetAPI ~= nil, "| request:", requestAPI ~= nil)
 print("logo:", logoImage ~= nil, "| bg:", bgImage ~= nil)
-print("RUN default:", runScriptsEnabled)
 print("======================================")
