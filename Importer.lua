@@ -1,5 +1,5 @@
 --==============================================================
--- PUNAKAWAN COMMUNITY IMPORTER v5.5 (PATCHED CORE & PURE SCRIPT)
+-- PUNAKAWAN COMMUNITY IMPORTER v5.5 (FIXED RS & SOURCE INJECTION)
 --==============================================================
 
 local Players = game:GetService("Players")
@@ -13,7 +13,7 @@ local Player = Players.LocalPlayer
 local PlayerGui = Player:WaitForChild("PlayerGui")
 
 --========================= CONFIG =============================
-local SPAWN_POSITION = Vector3.new(0, 0.5, 0) -- Dekat dengan spawn
+local SPAWN_POSITION = Vector3.new(0, 0.5, 0)
 local USE_SPAWNLOCATION = false
 local STACK_ON_PREVIOUS = false
 local ROOT_PATHS = { "", ".", "workspace", "Workspace" }
@@ -580,7 +580,7 @@ local function placeAtSpawn(model)
     model:PivotTo(model:GetPivot() + d)
 end
 
---======================= IMPORT OBJECTS =======================
+--======================= IMPORT OBJECTS (PATCHED RS) ==========
 local SERVICE_NAMES = {
     Lighting = true, ServerScriptService = true, ServerStorage = true, ReplicatedStorage = true, ReplicatedFirst = true,
     StarterGui = true, StarterPack = true, StarterPlayer = true, SoundService = true, Teams = true, Chat = true, TextChatService = true, MaterialService = true,
@@ -604,11 +604,46 @@ local function collectImportables(objects, report)
                     if s.ClassName == "Workspace" then
                         for _, c in ipairs(s:GetChildren()) do list[#list + 1] = c end
                     elseif s.ClassName == "ReplicatedStorage" then
-                        list[#list + 1] = s -- Simpan RS di dalam model agar script bisa baca
+                        -- SOLUSI INFINITE YIELD: Salin isi ReplicatedStorage langsung ke game
+                        local realRS = game:GetService("ReplicatedStorage")
+                        for _, child in ipairs(s:GetChildren()) do
+                            pcall(function() 
+                                local clone = child:Clone()
+                                clone.Parent = realRS 
+                            end)
+                        end
+                        list[#list + 1] = s 
+                    elseif s.ClassName == "Lighting" then
+                        local realLight = game:GetService("Lighting")
+                        for _, child in ipairs(s:GetChildren()) do
+                            pcall(function() 
+                                local clone = child:Clone()
+                                clone.Parent = realLight 
+                            end)
+                        end
+                        list[#list + 1] = s
                     else mergeIntoLocalService(s, report) end
                 end
             elseif obj.ClassName == "Workspace" then
                 for _, c in ipairs(obj:GetChildren()) do list[#list + 1] = c end
+            elseif obj.ClassName == "ReplicatedStorage" then
+                local realRS = game:GetService("ReplicatedStorage")
+                for _, child in ipairs(obj:GetChildren()) do
+                    pcall(function() 
+                        local clone = child:Clone()
+                        clone.Parent = realRS 
+                    end)
+                end
+                list[#list + 1] = obj
+            elseif obj.ClassName == "Lighting" then
+                local realLight = game:GetService("Lighting")
+                for _, child in ipairs(obj:GetChildren()) do
+                    pcall(function() 
+                        local clone = child:Clone()
+                        clone.Parent = realLight 
+                    end)
+                end
+                list[#list + 1] = obj
             elseif SERVICE_NAMES[obj.ClassName] then mergeIntoLocalService(obj, report)
             else list[#list + 1] = obj end
         end
@@ -956,25 +991,29 @@ if not okEnv or type(BASE_ENV) ~= "table" then BASE_ENV = _G end
 
 local function sanitizeName(s) local c = tostring(s):gsub("[^%w%._%- ]", "_"); if c == "" then c = "_" end; return c end
 
--- FUNGSI INJEKSI SOURCE YANG DIPAKSA (Sama persis dengan importer luar)
+-- MENGUBAH URUTAN: inst.Source didahulukan agar UI Editor menampilkan teks
 local function setScriptSource(inst, source)
     if not source or source == "" then return false end
-    -- 1. API setscriptsource
-    if setscriptsourceAPI then
-        local ok = pcall(setscriptsourceAPI, inst, source)
-        if ok then return true end
-    end
-    -- 2. Properti Source langsung
+    
+    -- 1. Properti Source langsung (Sering berhasil untuk Delta UI)
     local ok2, err2 = pcall(function() inst.Source = source end)
     if ok2 then
         local checkOk, checkSrc = pcall(function() return inst.Source end)
         if checkOk and checkSrc == source then return true end
     end
+
+    -- 2. API setscriptsource (Untuk menjalankan fungsi)
+    if setscriptsourceAPI then
+        local ok = pcall(setscriptsourceAPI, inst, source)
+        if ok then return true end
+    end
+    
     -- 3. sethiddenproperty
     if sethiddenpropertyAPI then
         local ok3 = pcall(sethiddenpropertyAPI, inst, "Source", source)
         if ok3 then return true end
     end
+    
     return false
 end
 
@@ -1011,7 +1050,7 @@ local function restoreScripts(objects, bytes, label)
     pcall(RbxParser.match, objects, parsed, function(live, p, path)
         if p.source ~= nil and ScriptClasses[live.ClassName] then
             stats.matched += 1; ScriptRegistry[live] = { source = p.source, path = path }; table.insert(stats.list, live)
-            -- SUNTIKKAN SOURCE ASLI TANPA MODIFIKASI
+            -- SUNTIKKAN SOURCE ASLI
             if setScriptSource(live, p.source) then stats.setOK += 1 end
             table.insert(exportItems, { path = path, source = p.source })
         end
@@ -1193,14 +1232,11 @@ ModelImport.Activated:Connect(function()
         else
             local _, msg, container = importObjects(objects, isPlace, baseNameOf(path))
             
-            -- INJEKSI ULANG SETELAH MASUK KE WORKSPACE (SOLUSI NOT FOUND)
+            -- INJEKSI ULANG SETELAH MASUK KE WORKSPACE
             if stats and stats.list then
-                local fixedCount = 0
                 for _, scriptInstance in ipairs(stats.list) do
                     local sInfo = ScriptRegistry[scriptInstance]
-                    if sInfo and scriptInstance.Parent then 
-                        if setScriptSource(scriptInstance, sInfo.source) then fixedCount += 1 end
-                    end
+                    if sInfo and scriptInstance.Parent then setScriptSource(scriptInstance, sInfo.source) end
                 end
             end
 
@@ -1225,7 +1261,6 @@ ToolboxImport.Activated:Connect(function()
         else
             local _, msg, container = importObjects(objects, false, "Toolbox_" .. tostring(id))
             
-            -- INJEKSI ULANG SETELAH MASUK KE WORKSPACE
             if stats and stats.list then
                 for _, scriptInstance in ipairs(stats.list) do
                     local sInfo = ScriptRegistry[scriptInstance]
@@ -1261,5 +1296,5 @@ if not readfileAPI then missing[#missing + 1] = "readfile" end
 if #missing > 0 then setStatus("API hilang: " .. table.concat(missing, ", ")) else setStatus("Siap. Tekan SCAN FILE.") end
 
 print("======================================")
-print("PUNAKAWAN IMPORTER v5.5 (PATCHED PURE)")
+print("PUNAKAWAN IMPORTER v5.5 (FIXED RS & SOURCE)")
 print("======================================")
