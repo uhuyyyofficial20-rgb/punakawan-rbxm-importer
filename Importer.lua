@@ -32,9 +32,9 @@ local RGB_SPEED = 0.2
 local TOOLBOX_CATEGORY = 10
 
 local LOGO_FILE = "punakawan_logo.png"
-local LOGO_ASSET_ID = ""
+local LOGO_ASSET_ID = "rbxassetid://132323133444056"
 local BG_FILE = "punawakan_bg.png"
-local BG_ASSET_ID = ""
+local BG_ASSET_ID = "rbxassetid://132323133444056"
 
 local MODEL_EXT = { rbxm = true, rbxmx = true, rbxl = true, rbxlx = true }
 local PLACE_EXT = { rbxl = true, rbxlx = true }
@@ -1121,7 +1121,10 @@ local runScriptsEnabled = RUN_SCRIPTS_DEFAULT
 local function refreshRunButton() ModelRun.Text = "RUN: " .. (runScriptsEnabled and "ON" or "OFF") end
 ModelRun.Activated:Connect(function() runScriptsEnabled = not runScriptsEnabled; refreshRunButton(); setStatus(runScriptsEnabled and "RUN ON." or "RUN OFF.") end)
 refreshRunButton()
-local modelList = newList(ModelPage, UDim2.fromOffset(0, 76), UDim2.new(1, 0, 1, -122), function(e) setStatus("Dipilih: " .. e.value) end)
+local modelList = newList(ModelPage, UDim2.fromOffset(0, 76), UDim2.new(1, 0, 1, -160), function(e) setStatus("Dipilih: " .. e.value) end)
+local ModelCopy = makeButton(ModelPage, "SALIN SCRIPT", UDim2.new(0, 0, 1, -78), UDim2.new(1 / 3, -3, 0, 32))
+local ModelRestore = makeButton(ModelPage, "PULIHKAN", UDim2.new(1 / 3, 1, 1, -78), UDim2.new(1 / 3, -2, 0, 32))
+local ModelAuto = makeButton(ModelPage, "AUTO: ON", UDim2.new(2 / 3, 3, 1, -78), UDim2.new(1 / 3, -3, 0, 32))
 local ModelImport = makeButton(ModelPage, "IMPORT FILE TERPILIH", UDim2.new(0, 0, 1, -38), UDim2.new(1, 0, 0, 38), true)
 local MODEL_FILTERS = { "ALL", "RBXM", "RBXMX", "RBXL", "RBXLX" }
 local modelFilterIndex = 1
@@ -1849,8 +1852,10 @@ local function loadToolboxAsset(id)
     return objects, nil, stats
 end
 
+local Backup
 local function finishImport(objects, stats, isPlace, baseName)
-    local _, msg, _, report = importObjects(objects, isPlace, baseName)
+    local _, msg, target, report = importObjects(objects, isPlace, baseName)
+    if target and typeof(target) == "Instance" then pcall(function() Backup.add(target, baseName) end) end
     local live, runnable, seen = {}, {}, {}
     local function add(inst)
         if inst and not seen[inst] and ScriptRegistry[inst] then
@@ -1905,6 +1910,66 @@ local function finishImport(objects, stats, isPlace, baseName)
         end
     end
     return msg .. extra
+end
+
+--======================= BACKUP / PULIHKAN / SALIN =============
+-- Studio Lite memakai state server untuk Play/Test; objek buatan executor hanya
+-- ada di client. Cadangan ini memasang ulang model bila hilang dari Workspace.
+Backup = {}
+do
+    local entries = {}
+    local autoRestore = true
+    Backup.add = function(target, name)
+        local ok, clone = pcall(function() return target:Clone() end)
+        if ok and clone then entries[#entries + 1] = { live = target, clone = clone, name = name } end
+    end
+    local function restoreAll(manual)
+        local n = 0
+        for _, e in ipairs(entries) do
+            local present = false
+            pcall(function() present = e.live and e.live.Parent ~= nil and e.live:IsDescendantOf(workspace) end)
+            if not present then
+                local ok, new = pcall(function() return e.clone:Clone() end)
+                if ok and new then
+                    pcall(function() new.Parent = workspace end)
+                    e.live = new; n += 1
+                end
+            end
+        end
+        if n > 0 then setStatus("Dipulihkan: " .. n .. " model kembali ke Workspace.")
+        elseif manual then setStatus("Semua model masih ada di Workspace.") end
+        return n
+    end
+    ModelRestore.Activated:Connect(function() restoreAll(true) end)
+    ModelAuto.Activated:Connect(function()
+        autoRestore = not autoRestore
+        ModelAuto.Text = "AUTO: " .. (autoRestore and "ON" or "OFF")
+        setStatus(autoRestore and "Auto-pulih ON." or "Auto-pulih OFF (hapus model manual tidak dipulihkan).")
+    end)
+    task.spawn(function()
+        while ScreenGui.Parent do
+            task.wait(1.5)
+            if autoRestore and #entries > 0 then pcall(restoreAll, false) end
+        end
+    end)
+    ModelCopy.Activated:Connect(function()
+        local list = {}
+        for inst, info in pairs(ScriptRegistry) do
+            local alive = false
+            pcall(function() alive = inst.Parent ~= nil and inst:IsDescendantOf(game) end)
+            if alive and type(info.source) == "string" then list[#list + 1] = info end
+        end
+        if #list == 0 then setStatus("Belum ada script hasil import untuk disalin."); return end
+        table.sort(list, function(a, b) return tostring(a.path) < tostring(b.path) end)
+        local parts = {}
+        for _, info in ipairs(list) do
+            parts[#parts + 1] = "-- ===== " .. tostring(info.path) .. " =====\n" .. info.source
+        end
+        local text = table.concat(parts, "\n\n")
+        local clip = getAPI("setclipboard") or getAPI("toclipboard")
+        local copied = clip and pcall(clip, text)
+        setStatus(#list .. " script " .. (copied and "disalin ke clipboard" or "TIDAK bisa disalin") .. ".")
+    end)
 end
 
 --======================= ACTIONS ==============================
@@ -1969,7 +2034,7 @@ refreshVolume(); switchTab("model"); Main.Visible = true
 
 do
     local delf = getAPI("delfolder")
-    if delf then for _, name in ipairs({ "PunawakanCache", "PunawakanThumbs", "PunawakanScripts" }) do
+    if delf then for _, name in ipairs({ "PunawakanCache", "PunawakanThumbs" }) do
         if folderExists(name) then pcall(delf, name) end
     end end
 end
@@ -1983,5 +2048,5 @@ if #missing > 0 then setStatus("API hilang: " .. table.concat(missing, ", "))
 else setStatus("Siap. setscriptsource: " .. (setscriptsourceAPI and "ada" or "TIDAK ADA") .. ", decompile: " .. (getAPI("decompile") and "ada" or "TIDAK ADA") .. ", hook Source: " .. SrcDiag.hook) end
 
 print("======================================")
-print("PUNAKAWAN IMPORTER v6.2 (NO INFINITE YIELD + SPAWN)")
+print("PUNAKAWAN IMPORTER v7.1")
 print("======================================")
