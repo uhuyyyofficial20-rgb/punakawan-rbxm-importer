@@ -1,5 +1,5 @@
 --==============================================================
--- PUNAKAWAN COMMUNITY IMPORTER PAID VERSION v1.0
+-- PUNAKAWAN COMMUNITY IMPORTER v6.0 (EDITABLE SCRIPTS + SOURCE HOOK)
 --==============================================================
 
 local Players = game:GetService("Players")
@@ -1979,5 +1979,5 @@ if #missing > 0 then setStatus("API hilang: " .. table.concat(missing, ", "))
 else setStatus("Siap. Tekan SCAN FILE. setscriptsource: " .. (setscriptsourceAPI and "ada" or "TIDAK ADA") .. ", decompile: " .. (getAPI("decompile") and "ada" or "TIDAK ADA") .. ", hook Source: " .. SrcDiag.hook) end
 
 print("======================================")
-print("PUNAKAWAN IMPORTER PAID VERSION v1.0")
+print("PUNAKAWAN IMPORTER v6.0 (EDITABLE SCRIPTS + SOURCE HOOK)")
 print("======================================")
