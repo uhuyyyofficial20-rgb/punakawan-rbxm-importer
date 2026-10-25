@@ -1,6 +1,5 @@
 --==============================================================
--- PUNAKAWAN COMMUNITY IMPORTER v5.5 (PATCHED CORE)
--- Fixes: File caching bypass, Virtual ReplicatedStorage, math.clamp
+-- PUNAKAWAN COMMUNITY IMPORTER v5.5 (PATCHED CORE & PURE SCRIPT)
 --==============================================================
 
 local Players = game:GetService("Players")
@@ -14,7 +13,7 @@ local Player = Players.LocalPlayer
 local PlayerGui = Player:WaitForChild("PlayerGui")
 
 --========================= CONFIG =============================
-local SPAWN_POSITION = Vector3.new(0, 0.5, 0)
+local SPAWN_POSITION = Vector3.new(0, 0.5, 0) -- Dekat dengan spawn
 local USE_SPAWNLOCATION = false
 local STACK_ON_PREVIOUS = false
 local ROOT_PATHS = { "", ".", "workspace", "Workspace" }
@@ -581,7 +580,7 @@ local function placeAtSpawn(model)
     model:PivotTo(model:GetPivot() + d)
 end
 
---======================= IMPORT OBJECTS (PATCHED) =============
+--======================= IMPORT OBJECTS =======================
 local SERVICE_NAMES = {
     Lighting = true, ServerScriptService = true, ServerStorage = true, ReplicatedStorage = true, ReplicatedFirst = true,
     StarterGui = true, StarterPack = true, StarterPlayer = true, SoundService = true, Teams = true, Chat = true, TextChatService = true, MaterialService = true,
@@ -948,7 +947,7 @@ ToolboxSearch.FocusLost:Connect(function(enter) if enter then runToolboxSearch(f
 local toolboxOpened = false
 tabButtons.toolbox.Activated:Connect(function() if not toolboxOpened then toolboxOpened = true; runToolboxSearch(false) end end)
 
---======================= SCRIPT RECOVERY (PATCHED) ============
+--======================= SCRIPT RECOVERY (PURE SOURCE) ========
 local ScriptClasses = { Script = true, LocalScript = true, ModuleScript = true }
 local ScriptRegistry = setmetatable({}, { __mode = "k" })
 local moduleCache = setmetatable({}, { __mode = "k" })
@@ -956,10 +955,26 @@ local okEnv, BASE_ENV = pcall(function() return getfenv() end)
 if not okEnv or type(BASE_ENV) ~= "table" then BASE_ENV = _G end
 
 local function sanitizeName(s) local c = tostring(s):gsub("[^%w%._%- ]", "_"); if c == "" then c = "_" end; return c end
+
+-- FUNGSI INJEKSI SOURCE YANG DIPAKSA (Sama persis dengan importer luar)
 local function setScriptSource(inst, source)
-    if setscriptsourceAPI and pcall(setscriptsourceAPI, inst, source) then return true end
-    if pcall(function() inst.Source = source end) then local ok, cur = pcall(function() return inst.Source end); if not ok or cur == source then return true end end
-    if sethiddenpropertyAPI and pcall(sethiddenpropertyAPI, inst, "Source", source) then return true end
+    if not source or source == "" then return false end
+    -- 1. API setscriptsource
+    if setscriptsourceAPI then
+        local ok = pcall(setscriptsourceAPI, inst, source)
+        if ok then return true end
+    end
+    -- 2. Properti Source langsung
+    local ok2, err2 = pcall(function() inst.Source = source end)
+    if ok2 then
+        local checkOk, checkSrc = pcall(function() return inst.Source end)
+        if checkOk and checkSrc == source then return true end
+    end
+    -- 3. sethiddenproperty
+    if sethiddenpropertyAPI then
+        local ok3 = pcall(sethiddenpropertyAPI, inst, "Source", source)
+        if ok3 then return true end
+    end
     return false
 end
 
@@ -996,7 +1011,9 @@ local function restoreScripts(objects, bytes, label)
     pcall(RbxParser.match, objects, parsed, function(live, p, path)
         if p.source ~= nil and ScriptClasses[live.ClassName] then
             stats.matched += 1; ScriptRegistry[live] = { source = p.source, path = path }; table.insert(stats.list, live)
-            if setScriptSource(live, p.source) then stats.setOK += 1 end; table.insert(exportItems, { path = path, source = p.source })
+            -- SUNTIKKAN SOURCE ASLI TANPA MODIFIKASI
+            if setScriptSource(live, p.source) then stats.setOK += 1 end
+            table.insert(exportItems, { path = path, source = p.source })
         end
     end)
     if EXPORT_SCRIPT_FILES then stats.exported = exportScripts(label, exportItems) end
@@ -1014,63 +1031,27 @@ local function describeScripts(stats)
     return msg
 end
 
--- PATCHED ENVIRONMENT (FIX CLAMP & VIRTUAL RS)
-local function makeEnv(inst, importRoot)
-    local customEnv = setmetatable({}, { __index = BASE_ENV })
-    
-    -- Patch math.clamp
-    customEnv.math = setmetatable({
-        clamp = function(n, min, max) 
-            if type(n) == "number" and type(min) == "number" and type(max) == "number" then
-                return math.max(min, math.min(max, n)) 
+-- SCRIPT MURNI (TANPA FAKE ENV, SESUAI PERMINTAAN)
+local function makeEnv(inst)
+    return setmetatable({
+        script = inst,
+        require = function(m)
+            local info = typeof(m) == "Instance" and ScriptRegistry[m] or nil
+            if info and m.ClassName == "ModuleScript" then
+                if moduleCache[m] then return moduleCache[m][1] end
+                local fn, err = loadstring(info.source, "=" .. info.path)
+                if not fn then error(err) end
+                setfenv(fn, makeEnv(m))
+                local result = fn()
+                moduleCache[m] = { result }
+                return result
             end
-            return 0 
-        end
-    }, { __index = math })
-
-    customEnv.tick = tick; customEnv.time = time; customEnv.warn = warn
-    
-    -- Virtual Game: Game:GetService("ReplicatedStorage") -> Cari di model yang diimport
-    local fakeGame = setmetatable({}, {
-        __index = function(_, key)
-            if key == "GetService" then
-                return function(_, name)
-                    if name == "ReplicatedStorage" and importRoot then
-                        local rs = importRoot:FindFirstChild("ReplicatedStorage")
-                        if rs then return rs end
-                        for _, d in ipairs(importRoot:GetDescendants()) do
-                            if d.Name == "ReplicatedStorage" and d:IsA("Folder") then return d end
-                        end
-                    end
-                    return game:GetService(name)
-                end
-            end
-            return game[key]
-        end
-    })
-    
-    customEnv.game = fakeGame; customEnv.script = inst
-    
-    -- Tangkap error require agar script lain tetap jalan
-    customEnv.require = function(m)
-        local info = typeof(m) == "Instance" and ScriptRegistry[m] or nil
-        if info and m.ClassName == "ModuleScript" then
-            if moduleCache[m] then return moduleCache[m][1] end
-            local fn, err = loadstring(info.source, "=" .. info.path)
-            if fn then
-                setfenv(fn, makeEnv(m, importRoot))
-                local ok, res = pcall(fn)
-                if ok then moduleCache[m] = { res }; return res end
-                warn("[Punakawan] Module error di " .. info.path .. ": " .. tostring(res))
-            end
-        end
-        return require(m)
-    end
-    
-    return customEnv
+            return require(m)
+        end,
+    }, { __index = BASE_ENV })
 end
 
-local function runScripts(list, importRoot)
+local function runScripts(list)
     local started = 0
     for _, inst in ipairs(list) do
         local info = ScriptRegistry[inst]
@@ -1079,7 +1060,7 @@ local function runScripts(list, importRoot)
             if not disabled then
                 local fn, err = loadstring(info.source, "=" .. info.path)
                 if fn then
-                    setfenv(fn, makeEnv(inst, importRoot))
+                    setfenv(fn, makeEnv(inst))
                     task.spawn(fn)
                     started += 1
                 else
@@ -1100,7 +1081,6 @@ local function readFileBytes(resolvedPath)
 end
 local function emptyStats(reason) return { inFile = 0, matched = 0, setOK = 0, exported = 0, list = {}, err = reason } end
 
--- Cache file ke nama aman untuk menghindari "Not found"
 local function prepareFile(path)
     local resolved = findFile(path)
     if not resolved then return nil, "file tidak ditemukan" end
@@ -1212,9 +1192,21 @@ ModelImport.Activated:Connect(function()
         if not objects then setStatus("IMPOR GAGAL: " .. tostring(err))
         else
             local _, msg, container = importObjects(objects, isPlace, baseNameOf(path))
+            
+            -- INJEKSI ULANG SETELAH MASUK KE WORKSPACE (SOLUSI NOT FOUND)
+            if stats and stats.list then
+                local fixedCount = 0
+                for _, scriptInstance in ipairs(stats.list) do
+                    local sInfo = ScriptRegistry[scriptInstance]
+                    if sInfo and scriptInstance.Parent then 
+                        if setScriptSource(scriptInstance, sInfo.source) then fixedCount += 1 end
+                    end
+                end
+            end
+
             local extra = describeScripts(stats)
             if stats and #stats.list > 0 then
-                if runScriptsEnabled then extra = extra .. " | " .. runScripts(stats.list, container) .. " dijalankan"
+                if runScriptsEnabled then extra = extra .. " | " .. runScripts(stats.list) .. " dijalankan"
                 else extra = extra .. " | RUN OFF" end
             end
             setStatus(msg .. extra)
@@ -1232,9 +1224,18 @@ ToolboxImport.Activated:Connect(function()
         if not objects then setStatus("IMPOR GAGAL: " .. tostring(err))
         else
             local _, msg, container = importObjects(objects, false, "Toolbox_" .. tostring(id))
+            
+            -- INJEKSI ULANG SETELAH MASUK KE WORKSPACE
+            if stats and stats.list then
+                for _, scriptInstance in ipairs(stats.list) do
+                    local sInfo = ScriptRegistry[scriptInstance]
+                    if sInfo and scriptInstance.Parent then setScriptSource(scriptInstance, sInfo.source) end
+                end
+            end
+
             local extra = describeScripts(stats)
             if stats and #stats.list > 0 then
-                if runScriptsEnabled then extra = extra .. " | " .. runScripts(stats.list, container) .. " dijalankan"
+                if runScriptsEnabled then extra = extra .. " | " .. runScripts(stats.list) .. " dijalankan"
                 else extra = extra .. " | RUN OFF" end
             end
             setStatus(msg .. extra)
@@ -1260,5 +1261,5 @@ if not readfileAPI then missing[#missing + 1] = "readfile" end
 if #missing > 0 then setStatus("API hilang: " .. table.concat(missing, ", ")) else setStatus("Siap. Tekan SCAN FILE.") end
 
 print("======================================")
-print("PUNAKAWAN IMPORTER v5.5 (PATCHED)")
+print("PUNAKAWAN IMPORTER v5.5 (PATCHED PURE)")
 print("======================================")
