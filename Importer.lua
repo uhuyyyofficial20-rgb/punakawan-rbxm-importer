@@ -1,5 +1,5 @@
 --==============================================================
--- PUNAKAWAN COMMUNITY IMPORTER v6.0 (EDITABLE SCRIPTS + SOURCE HOOK)
+-- PUNAKAWAN COMMUNITY IMPORTER v6.2 (NO INFINITE YIELD + SPAWN)
 --==============================================================
 
 local Players = game:GetService("Players")
@@ -13,13 +13,13 @@ local Player = Players.LocalPlayer
 local PlayerGui = Player:WaitForChild("PlayerGui")
 
 --========================= CONFIG =============================
-local SPAWN_POSITION = Vector3.new(0, 0.5, 0)
-local USE_SPAWNLOCATION = false
+local SPAWN_POSITION = nil -- Auto-detect spawn location
+local USE_SPAWNLOCATION = true
 local STACK_ON_PREVIOUS = false
 local ROOT_PATHS = { "", ".", "workspace", "Workspace" }
 local MAX_DEPTH = 20
-local RUN_SCRIPTS_DEFAULT = true
-local EXPORT_SCRIPT_FILES = false -- jangan buat file/folder baru di HP
+local RUN_SCRIPTS_DEFAULT = false -- WAJIB FALSE: Mencegah Infinite Yield
+local EXPORT_SCRIPT_FILES = false 
 local SCRIPT_EXPORT_FOLDER = "PunawakanScripts"
 
 local API_HOSTS = { "apis.roblox.com", "apis.roproxy.com" }
@@ -197,7 +197,6 @@ end
 local function accumulate(arr) for i = 2, #arr do arr[i] = arr[i] + arr[i - 1] end; return arr end
 local function readString(data, pos) local l = u32(data, pos); return ssub(data, pos + 4, pos + 3 + l), pos + 4 + l end
 
--- Decoder ZSTD murni Lua (RFC 8878) untuk chunk RBXM modern
 local ZP2 = {}
 for i = 0, 52 do ZP2[i] = 2 ^ i end
 local Z_LL_BASE, Z_LL_BITS, Z_ML_BASE, Z_ML_BITS = {}, {}, {}, {}
@@ -228,7 +227,6 @@ local function zstdDecompress(src)
     local huff, tabLL, tabOF, tabML = nil, nil, nil, nil
     local predCache = {}
 
-    -- baca nb bit (<=32) mulai bit ke-lo dari byte pertama 'base' (little-endian)
     local function bitsAt(base, lo, nb)
         if nb <= 0 then return 0 end
         local bi = floor(lo / 8)
@@ -681,7 +679,6 @@ function RbxParser.countScripts(nodes)
     return n
 end
 local function matchLevel(liveList, parsedList, cb, path)
-    -- kelompokkan node hasil parse per (class, nama); tiap node hanya dipakai sekali
     local groups = {}
     for _, p in ipairs(parsedList) do
         local k = p.class .. "\0" .. p.name
@@ -694,7 +691,6 @@ local function matchLevel(liveList, parsedList, cb, path)
         if g and #g > 0 then
             local pick = 1
             if #g > 1 then
-                -- nama kembar: pilih kandidat dengan jumlah anak yang sama
                 local lc = #live:GetChildren()
                 for i, cand in ipairs(g) do
                     if #cand.children == lc then pick = i; break end
@@ -960,8 +956,13 @@ local function collectSpawns()
     local t = {}; for _, d in ipairs(workspace:GetDescendants()) do if d:IsA("SpawnLocation") then t[#t + 1] = d end end; return t
 end
 local function placeAtSpawn(model)
-    local spawns = collectSpawns(); local sp = SPAWN_POSITION
+    local spawns = collectSpawns()
+    if not SPAWN_POSITION then
+        if #spawns > 0 then SPAWN_POSITION = spawns[1].Position else SPAWN_POSITION = Vector3.new(0, 0.5, 0) end
+    end
+    local sp = SPAWN_POSITION
     if USE_SPAWNLOCATION and #spawns > 0 then sp = spawns[1].Position end
+    
     local boxCF, boxSize = model:GetBoundingBox(); local groundY
     local baseplate = workspace:FindFirstChild("Baseplate")
     if baseplate and baseplate:IsA("BasePart") then
@@ -982,16 +983,14 @@ local function placeAtSpawn(model)
     model:PivotTo(model:GetPivot() + d)
 end
 
---======================= IMPORT OBJECTS (v5.6) ================
+--======================= IMPORT OBJECTS =======================
 local SERVICE_NAMES = {
     Lighting = true, ServerScriptService = true, ServerStorage = true, ReplicatedStorage = true, ReplicatedFirst = true,
     StarterGui = true, StarterPack = true, StarterPlayer = true, SoundService = true, Teams = true, Chat = true, TextChatService = true, MaterialService = true,
 }
--- registry: instance script -> { source, path }. Dideklarasikan di sini supaya clone ikut terdaftar.
 local ScriptRegistry = setmetatable({}, { __mode = "k" })
 local ScriptNoRun = setmetatable({}, { __mode = "k" })
 
--- salin registry dari objek asli ke hasil Clone() (Clone tidak membawa source script)
 local CloneTools = {}
 function CloneTools.register(orig, clone, report)
     local info = ScriptRegistry[orig]
@@ -1023,7 +1022,6 @@ local function mergeIntoLocalService(serviceObj, report)
     if not okS or not realS then report.failed = report.failed + #children; return end
     for _, child in ipairs(children) do
         if serviceObj.ClassName == "StarterGui" and child:IsA("LayerCollector") then
-            -- salinan di PlayerGui yang dijalankan; versi di StarterGui hanya disimpan
             local okC, clone = pcall(function() return child:Clone() end)
             if okC and typeof(clone) == "Instance" then
                 CloneTools.register(child, clone, report)
@@ -1118,7 +1116,7 @@ local ModelPage = newPage("model")
 local ModelSearch = makeBox(ModelPage, "Cari file RBXM / RBXL...", UDim2.fromOffset(0, 0), UDim2.new(1, 0, 0, 32))
 local ModelScan = makeButton(ModelPage, "SCAN FILE", UDim2.fromOffset(0, 38), UDim2.new(1 / 3, -3, 0, 32), true)
 local ModelFilter = makeButton(ModelPage, "FILTER: ALL", UDim2.new(1 / 3, 1, 0, 38), UDim2.new(1 / 3, -2, 0, 32))
-local ModelRun = makeButton(ModelPage, "RUN: ON", UDim2.new(2 / 3, 3, 0, 38), UDim2.new(1 / 3, -3, 0, 32))
+local ModelRun = makeButton(ModelPage, "RUN: OFF", UDim2.new(2 / 3, 3, 0, 38), UDim2.new(1 / 3, -3, 0, 32))
 local runScriptsEnabled = RUN_SCRIPTS_DEFAULT
 local function refreshRunButton() ModelRun.Text = "RUN: " .. (runScriptsEnabled and "ON" or "OFF") end
 ModelRun.Activated:Connect(function() runScriptsEnabled = not runScriptsEnabled; refreshRunButton(); setStatus(runScriptsEnabled and "RUN ON." or "RUN OFF.") end)
@@ -1381,7 +1379,7 @@ ToolboxSearch.FocusLost:Connect(function(enter) if enter then runToolboxSearch(f
 local toolboxOpened = false
 tabButtons.toolbox.Activated:Connect(function() if not toolboxOpened then toolboxOpened = true; runToolboxSearch(false) end end)
 
---======================= SCRIPT RECOVERY (v5.6) ===============
+--======================= SCRIPT RECOVERY ===============
 local ScriptClasses = { Script = true, LocalScript = true, ModuleScript = true }
 local moduleCache = setmetatable({}, { __mode = "k" })
 local decompileAPI = getAPI("decompile")
@@ -1390,17 +1388,12 @@ if not okEnv or type(BASE_ENV) ~= "table" then BASE_ENV = _G end
 
 local function sanitizeName(s) local c = tostring(s):gsub("[^%w%._%- ]", "_"); if c == "" then c = "_" end; return c end
 
--- Tulis source ke instance script. Kosong dianggap sukses (tidak ada yang perlu ditulis).
--- Hasil tiap metode dicatat di SrcDiag supaya penyebab kegagalan terlihat di status.
 local SrcDiag = { direct = "-", api = "-", hidden = "-", id = "-" }
--- (helper ditaruh di tabel SrcDiag supaya tidak menambah jumlah variabel local level atas)
 SrcDiag.setId = getAPI("setthreadidentity") or getAPI("set_thread_identity") or getAPI("setidentity")
     or getAPI("setthreadcontext") or getAPI("set_thread_context")
 SrcDiag.getId = getAPI("getthreadidentity") or getAPI("get_thread_identity") or getAPI("getidentity")
     or getAPI("getthreadcontext") or getAPI("get_thread_context")
 
--- Jalankan fn dengan identitas thread dinaikkan (properti Source butuh capability tinggi),
--- lalu kembalikan identitas semula.
 function SrcDiag.withIdentity(fn)
     local prev
     if SrcDiag.getId then local okG, v = pcall(SrcDiag.getId); if okG then prev = v end end
@@ -1420,15 +1413,13 @@ end
 
 function SrcDiag.readSource(inst)
     local prev = SrcDiag.writing
-    SrcDiag.writing = true -- baca nilai ASLI, jangan lewat hook
+    SrcDiag.writing = true
     local okR, cur = pcall(function() return inst.Source end)
     SrcDiag.writing = prev
     if okR and type(cur) == "string" then return cur end
     return nil
 end
 
--- Tabel source yang dipantau + HOOK: setiap pembacaan `script.Source` (atau decompile/getscriptsource)
--- pada script hasil import mengembalikan isi ASLI dari file, walau executor tidak bisa menulis Source.
 SrcDiag.src = setmetatable({}, { __mode = "k" })
 SrcDiag.hook = "belum"
 SrcDiag.writing = false
@@ -1449,7 +1440,7 @@ function SrcDiag.installHook()
     local function newNewindex(self, key, value)
         if key == "Source" and not SrcDiag.writing and type(value) == "string" and typeof(self) == "Instance"
             and SrcDiag.src[self] ~= nil then
-            SrcDiag.src[self] = value -- edit dari Studio Lite tersimpan
+            SrcDiag.src[self] = value
             return
         end
         if not oldNew then return end
@@ -1471,17 +1462,16 @@ function SrcDiag.installHook()
             okH = pcall(function()
                 local mt = grm(game)
                 local oi = rawget(mt, "__index")
-                assert(oi ~= nil, "no __index")
+                local on = rawget(mt, "__newindex")
                 if sro then sro(mt, false) elseif mw then mw(mt) end
-                oldIndex = oi
-                mt.__index = nc(newIndex)
+                if oi then oldIndex = oi; mt.__index = nc(newIndex) end
+                if on then oldNew = on; mt.__newindex = nc(newNewindex) end
                 if sro then sro(mt, true) end
             end)
         end
     end
     SrcDiag.hook = (okH and oldIndex ~= nil) and "ok" or "gagal"
 
-    -- fungsi baca source bawaan executor ikut diarahkan ke isi asli
     pcall(function()
         local okG, genv = pcall(getgenv)
         if not okG or type(genv) ~= "table" then return end
@@ -1504,10 +1494,17 @@ pcall(SrcDiag.installHook)
 local function setScriptSource(inst, source)
     if source == nil then return false end
     if source == "" then return true end
-    SrcDiag.src[inst] = source -- selalu catat, dipakai hook Source
+    SrcDiag.src[inst] = source
     SrcDiag.writing = true
     local okW = SrcDiag.withIdentity(function()
-        -- 1. properti Source langsung (diverifikasi dengan baca ulang)
+        if decompileAPI and source == "" then
+            local okD, decompiled = pcall(decompileAPI, inst)
+            if okD and type(decompiled) == "string" and #decompiled > 0 and not string.find(decompiled, "^%-%-") then
+                source = decompiled
+                SrcDiag.src[inst] = source
+            end
+        end
+
         local ok1, e1 = pcall(function() inst.Source = source end)
         if ok1 then
             local cur = SrcDiag.readSource(inst)
@@ -1516,7 +1513,7 @@ local function setScriptSource(inst, source)
         else
             SrcDiag.direct = tostring(e1):sub(1, 40)
         end
-        -- 2. setscriptsource milik executor
+        
         if setscriptsourceAPI then
             local ok, e = pcall(setscriptsourceAPI, inst, source)
             if ok then
@@ -1529,7 +1526,7 @@ local function setScriptSource(inst, source)
         else
             SrcDiag.api = "tidak ada"
         end
-        -- 3. sethiddenproperty
+        
         if sethiddenpropertyAPI then
             local ok, e = pcall(sethiddenpropertyAPI, inst, "Source", source)
             if ok then
@@ -1546,7 +1543,6 @@ local function setScriptSource(inst, source)
     end)
     SrcDiag.writing = false
     if okW then return true end
-    -- penulisan asli ditolak executor: isi tetap bisa dibaca lewat hook (lihat SrcDiag.installHook)
     return SrcDiag.hook == "ok"
 end
 
@@ -1572,7 +1568,6 @@ local function restoreScripts(objects, bytes, label)
     local stats = { inFile = 0, matched = 0, setOK = 0, exported = 0, fallback = 0, list = {}, err = nil, hint = nil }
     local exportItems = {}
 
-    -- Cadangan bila source tidak ada di file: baca properti Source, lalu decompile bawaan executor.
     local function getFallbackSource(inst)
         local ok, src = pcall(function() return inst.Source end)
         if ok and type(src) == "string" and src ~= "" then return src, "Source" end
@@ -1587,7 +1582,6 @@ local function restoreScripts(objects, bytes, label)
         return nil
     end
 
-    -- 1) ambil source asli dari isi file (RBXM biner LZ4/ZSTD atau XML)
     if type(bytes) == "string" and #bytes > 0 then
         local okP, r1, r2 = pcall(RbxParser.parse, bytes)
         local parsed, perr
@@ -1614,7 +1608,6 @@ local function restoreScripts(objects, bytes, label)
         stats.err = "file asli tidak tersedia"
     end
 
-    -- 2) script yang belum punya source: coba Source / decompile
     local function walk(inst, parentPath)
         local path = parentPath .. "/" .. inst.Name
         if ScriptClasses[inst.ClassName] and not ScriptRegistry[inst] then
@@ -1639,8 +1632,6 @@ local function restoreScripts(objects, bytes, label)
         end
     end
 
-    -- 3) ganti script hasil load engine (Read Only) dengan script baru buatan Instance.new
-    --    yang Source-nya bisa dibaca/diedit; anak-anaknya dipindahkan ke script baru.
     local CS = game:GetService("CollectionService")
     local function depthOf(i) local d, p = 0, i.Parent; while p do d = d + 1; p = p.Parent end; return d end
     local function fresh(old)
@@ -1661,7 +1652,7 @@ local function restoreScripts(objects, bytes, label)
     end
     local ordered = {}
     for _, inst in ipairs(stats.list) do ordered[#ordered + 1] = { inst = inst, d = depthOf(inst) } end
-    table.sort(ordered, function(a, b) return a.d > b.d end) -- terdalam dulu
+    table.sort(ordered, function(a, b) return a.d > b.d end)
     local newList, replaced = {}, 0
     for _, e in ipairs(ordered) do
         local old = e.inst
@@ -1708,7 +1699,6 @@ local function describeScripts(stats)
     return msg
 end
 
--- SCRIPT MURNI (TANPA FAKE ENV, SESUAI PERMINTAAN)
 local function makeEnv(inst)
     return setmetatable({
         script = inst,
@@ -1724,7 +1714,7 @@ local function makeEnv(inst)
                 return result
             end
             return require(m)
-        end,
+        end
     }, { __index = BASE_ENV })
 end
 
@@ -1802,7 +1792,6 @@ local ASSET_ENDPOINTS = {
     "https://assetdelivery.roblox.com/v1/asset/?id=", "https://assetdelivery.roblox.com/v1/asset?id=",
     "https://assetdelivery.roproxy.com/v1/asset/?id=", "https://www.roblox.com/asset/?id=",
 }
--- Unduh file model ASLI (lengkap dengan isi script) dari Roblox.
 local function fetchAssetBytes(id)
     local function looksLikeRbx(b)
         if type(b) ~= "string" or #b < 100 then return false end
@@ -1811,7 +1800,6 @@ local function fetchAssetBytes(id)
     end
     local ASSET_V2 = { "https://assetdelivery.roblox.com/v2/assetId/", "https://assetdelivery.roproxy.com/v2/assetId/" }
     local hdr = { ["Accept"] = "*/*", ["User-Agent"] = "Roblox/WinInet", ["Roblox-Place-Id"] = tostring(game.PlaceId) }
-    -- jalur 1: v2 -> JSON berisi lokasi CDN
     for _, base in ipairs(ASSET_V2) do
         local body = httpBody(base .. tostring(id), hdr)
         if body then
@@ -1826,7 +1814,6 @@ local function fetchAssetBytes(id)
             end
         end
     end
-    -- jalur 2: v1 langsung
     for _, base in ipairs(ASSET_ENDPOINTS) do
         local b = httpBody(base .. tostring(id), hdr)
         if looksLikeRbx(b) then return b end
@@ -1844,7 +1831,6 @@ local function loadToolboxAsset(id)
         local ok2, m = pcall(function() return InsertService:LoadAsset(id) end)
         if ok2 and typeof(m) == "Instance" then objects = { m }
         elseif bytes and writefileAPI then
-            -- satu file sementara di root, langsung dihapus setelah dimuat (tidak ada folder/cache)
             local tmp = "punawakan_tmp_" .. tostring(id) .. ".rbxm"
             local objs, err, stats
             if pcall(writefileAPI, tmp, bytes) then
@@ -1863,7 +1849,6 @@ local function loadToolboxAsset(id)
     return objects, nil, stats
 end
 
--- Selesaikan import: tempatkan objek, pasang ulang source ke instance akhir, lalu jalankan script.
 local function finishImport(objects, stats, isPlace, baseName)
     local _, msg, _, report = importObjects(objects, isPlace, baseName)
     local live, runnable, seen = {}, {}, {}
@@ -1887,7 +1872,6 @@ local function finishImport(objects, stats, isPlace, baseName)
         if info and setScriptSource(inst, info.source) then injected = injected + 1 end
     end
     if stats then stats.injected = injected; stats.liveCount = #live end
-    -- tulis ulang sekali lagi setelah engine selesai menaruh objek (beberapa executor menolak saat baru dipasang)
     task.delay(1.5, function()
         for _, inst in ipairs(live) do
             local info = ScriptRegistry[inst]
@@ -1897,8 +1881,28 @@ local function finishImport(objects, stats, isPlace, baseName)
 
     local extra = describeScripts(stats)
     if #runnable > 0 then
-        if runScriptsEnabled then extra = extra .. " | " .. runScripts(runnable) .. " dijalankan"
-        else extra = extra .. " | RUN OFF" end
+        if runScriptsEnabled then
+            task.delay(2, function()
+                if not ScreenGui.Parent then return end
+                
+                -- FITUR BARU: Saring script yang memiliki WaitForChild agar tidak menyebabkan Infinite Yield
+                local safeRunnable = {}
+                for _, inst in ipairs(runnable) do
+                    local info = ScriptRegistry[inst]
+                    if info and info.source and not string.find(info.source, "WaitForChild", 1, true) then
+                        safeRunnable[#safeRunnable + 1] = inst
+                    else
+                        warn("[Punakawan] Skip script (WaitForChild): " .. (info and info.path or "unknown"))
+                    end
+                end
+                
+                local started = runScripts(safeRunnable)
+                setStatus(msg .. extra .. " | " .. started .. " dijalankan (script WaitForChild dilewati)")
+            end)
+            extra = extra .. " | Menunggu eksekusi..."
+        else
+            extra = extra .. " | RUN OFF"
+        end
     end
     return msg .. extra
 end
@@ -1963,7 +1967,7 @@ ScreenGui.Destroying:Connect(function() for _, c in ipairs(connections) do c:Dis
 for _, d in ipairs(ScreenGui:GetDescendants()) do applyTextShadow(d) end
 refreshVolume(); switchTab("model"); Main.Visible = true
 
-do -- hapus folder cache/ekspor buatan versi lama supaya penyimpanan tidak bertambah
+do
     local delf = getAPI("delfolder")
     if delf then for _, name in ipairs({ "PunawakanCache", "PunawakanThumbs", "PunawakanScripts" }) do
         if folderExists(name) then pcall(delf, name) end
@@ -1976,8 +1980,8 @@ if not getcustomassetAPI then missing[#missing + 1] = "getcustomasset" end
 if not writefileAPI then missing[#missing + 1] = "writefile" end
 if not readfileAPI then missing[#missing + 1] = "readfile" end
 if #missing > 0 then setStatus("API hilang: " .. table.concat(missing, ", "))
-else setStatus("Siap. Tekan SCAN FILE. setscriptsource: " .. (setscriptsourceAPI and "ada" or "TIDAK ADA") .. ", decompile: " .. (getAPI("decompile") and "ada" or "TIDAK ADA") .. ", hook Source: " .. SrcDiag.hook) end
+else setStatus("Siap. setscriptsource: " .. (setscriptsourceAPI and "ada" or "TIDAK ADA") .. ", decompile: " .. (getAPI("decompile") and "ada" or "TIDAK ADA") .. ", hook Source: " .. SrcDiag.hook) end
 
 print("======================================")
-print("PUNAKAWAN IMPORTER v6.0 (EDITABLE SCRIPTS + SOURCE HOOK)")
+print("PUNAKAWAN IMPORTER v6.2 (NO INFINITE YIELD + SPAWN)")
 print("======================================")
